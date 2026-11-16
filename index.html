@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>3D Split</title>
+  <meta name="description" content="Importa un modello 3D, riconosci le parti e separale con connettori per la stampa 3D." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 3 4 9.5v13L16 29l12-6.5v-13z' fill='%23ff8a1f'/%3E%3Cpath d='M16 3v26M4 9.5l24 13' stroke='%231d2026' stroke-width='2.5'/%3E%3C/svg%3E" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="logo"></span>3D Split</div>
+    <button id="btn-open" class="primary">Apri modello…</button>
+    <input id="file-input" type="file" hidden />
+    <div class="sep"></div>
+    <button id="btn-undo" title="Annulla (Ctrl+Z)" disabled>↶ Annulla</button>
+    <button id="btn-redo" title="Ripeti (Ctrl+Y)" disabled>↷ Ripeti</button>
+    <div class="spacer"></div>
+    <div class="menu-wrap">
+      <button id="btn-export" disabled>Esporta ▾</button>
+      <div id="export-menu" class="menu" hidden>
+        <button data-export="3mf">3MF – tutte le parti in un file</button>
+        <button data-export="stl-zip">STL – una per parte (ZIP)</button>
+        <button data-export="obj-zip">OBJ – una per parte (ZIP)</button>
+        <button data-export="stl-active">STL – solo parte attiva</button>
+      </div>
+    </div>
+    <button id="btn-settings" title="Impostazioni e chiave Gemini">⚙ Impostazioni</button>
+  </header>
+
+  <main class="layout">
+    <aside class="panel left" id="left-panel">
+      <section>
+        <h3>Parti</h3>
+        <ul id="parts-list" class="parts-list"><li class="empty">Nessun modello caricato</li></ul>
+      </section>
+
+      <section id="sec-recognize">
+        <h3>Riconoscimento forme</h3>
+        <p class="hint">Divide automaticamente il modello nelle sue parti (seguendo pieghe e strozzature).</p>
+        <label class="row">Dettaglio
+          <input id="seg-detail" type="range" min="0" max="100" value="45" />
+        </label>
+        <div class="btn-row">
+          <button id="btn-autoseg" disabled>Riconosci parti</button>
+          <label class="check"><input id="chk-showseg" type="checkbox" checked /> Colori</label>
+        </div>
+        <div class="ai-box">
+          <div class="ai-title">✨ Con intelligenza artificiale (Gemini)</div>
+          <button id="btn-ai-analyze" disabled>Riconosci e nomina le parti</button>
+          <div class="ai-query">
+            <input id="ai-query" type="text" placeholder="es. capelli, braccio destro…" disabled />
+            <button id="btn-ai-select" disabled>Seleziona</button>
+          </div>
+          <p id="ai-status" class="hint"></p>
+        </div>
+        <ul id="seg-list" class="seg-list"></ul>
+      </section>
+
+      <section id="sec-info">
+        <h3>Modello</h3>
+        <dl id="model-info" class="info"></dl>
+        <label class="row">Altezza <input id="model-height" type="number" min="0.1" step="1" /> mm
+          <button id="btn-scale" title="Scala tutto il modello all'altezza indicata">Scala</button></label>
+        <button id="btn-repair" disabled>Ripara mesh</button>
+      </section>
+    </aside>
+
+    <div class="viewport" id="viewport">
+      <div class="drop-hint" id="drop-hint">
+        <div class="drop-card">
+          <div class="drop-icon"></div>
+          <h2>Trascina qui un modello 3D</h2>
+          <p>STL · 3MF · OBJ · PLY · GLB/GLTF · OFF · STEP · IGES</p>
+          <button id="btn-open2" class="primary">Scegli file…</button>
+          <button id="btn-demo" class="ghost">Prova con un modello di esempio</button>
+          <p class="small">I file vengono elaborati nel tuo browser e non vengono caricati su nessun server.</p>
+        </div>
+      </div>
+      <div class="view-toolbar" id="view-toolbar" hidden>
+        <button data-view="front" title="Fronte">Fronte</button>
+        <button data-view="back" title="Retro">Retro</button>
+        <button data-view="left" title="Sinistra">Sx</button>
+        <button data-view="right" title="Destra">Dx</button>
+        <button data-view="top" title="Alto">Alto</button>
+        <button data-view="iso" title="Prospettiva">3D</button>
+        <button id="btn-frame" title="Inquadra (F)">Inquadra</button>
+        <button id="btn-upaxis" title="Cambia asse verticale">Asse su: Z</button>
+      </div>
+      <div class="mode-toolbar" id="mode-toolbar" hidden>
+        <button data-mode="smart" class="active" title="Clic su una parte: la riconosce e la seleziona (S)">🎯 Parte</button>
+        <button data-mode="segment" title="Seleziona un segmento riconosciuto (G)">🧩 Segmento</button>
+        <button data-mode="surface" title="Superficie liscia fino agli spigoli (U)">▱ Superficie</button>
+        <button data-mode="brush" title="Pennello: dipingi per aggiungere, Alt per togliere (B)">🖌 Pennello</button>
+        <button data-mode="component" title="Corpo separato intero (C)">⬢ Corpo</button>
+      </div>
+      <div class="cursor-hint" id="cursor-hint" hidden></div>
+      <div class="busy" id="busy" hidden><div class="spinner"></div><span id="busy-text">Elaborazione…</span></div>
+    </div>
+
+    <aside class="panel right" id="right-panel">
+      <section id="sec-select">
+        <h3>Selezione</h3>
+        <p class="hint" id="mode-help">Clicca su una parte del modello: viene riconosciuta e selezionata. Shift+clic aggiunge, Alt+clic toglie.</p>
+        <div id="smart-nav" class="smart-nav" hidden>
+          <button id="btn-cand-prev" title="Parte più piccola">◀ Più piccola</button>
+          <span id="cand-label">1/1</span>
+          <button id="btn-cand-next" title="Parte più grande">Più grande ▶</button>
+        </div>
+        <label class="row" id="row-brush" hidden>Raggio pennello <input id="brush-radius" type="range" min="1" max="100" value="15" /><span id="brush-radius-val"></span></label>
+        <label class="row" id="row-angle" hidden>Angolo spigoli <input id="surface-angle" type="range" min="1" max="80" value="25" /><span id="surface-angle-val">25°</span></label>
+        <div class="btn-grid">
+          <button id="btn-grow" title="Espandi di un anello (+)">＋ Espandi</button>
+          <button id="btn-shrink" title="Riduci di un anello (−)">－ Riduci</button>
+          <button id="btn-invert" title="Inverti (I)">⇄ Inverti</button>
+          <button id="btn-clear" title="Deseleziona (Esc)">✕ Nessuna</button>
+        </div>
+        <p class="sel-info" id="sel-info">Nessuna selezione</p>
+      </section>
+
+      <section id="sec-split">
+        <h3>Separa la parte</h3>
+        <div class="seg-toggle" role="radiogroup">
+          <button data-method="membrane" class="active" title="La giunzione segue esattamente il bordo della parte">Bordo naturale</button>
+          <button data-method="plane" title="Taglio piatto, stampabile senza supporti">Piano</button>
+        </div>
+        <div id="plane-controls" hidden>
+          <div class="btn-row">
+            <button id="btn-plane-fit" title="Adatta il piano al bordo della selezione">Adatta alla selezione</button>
+            <button id="btn-plane-move" class="toggle" title="Sposta il piano con le frecce">✥</button>
+            <button id="btn-plane-rotate" class="toggle" title="Ruota il piano">⟳</button>
+          </div>
+          <label class="row">Spostamento <input id="plane-offset" type="range" min="-100" max="100" value="0" /><span id="plane-offset-val">0 mm</span></label>
+          <label class="check"><input id="chk-plane-only-sel" type="checkbox" checked /> Stacca solo la parte selezionata</label>
+        </div>
+        <label class="row">Connettore
+          <select id="conn-type">
+            <option value="none">Nessuno</option>
+            <option value="peg-round" selected>Perno tondo</option>
+            <option value="peg-square">Perno quadrato (anti-rotazione)</option>
+            <option value="magnet">Sedi per magneti</option>
+            <option value="dovetail">Coda di rondine (solo piano)</option>
+          </select>
+        </label>
+        <div id="conn-params">
+          <label class="row"><span id="lbl-diam">Diametro</span> <input id="conn-diam" type="number" min="0.5" step="0.5" value="5" /> mm</label>
+          <label class="row"><span id="lbl-len">Lunghezza</span> <input id="conn-len" type="number" min="0.5" step="0.5" value="6" /> mm</label>
+          <label class="row" id="row-angle-dt" hidden>Angolo <input id="conn-angle" type="number" min="5" max="30" step="1" value="15" /> °</label>
+          <label class="row">Tolleranza <input id="conn-tol" type="number" min="0" step="0.05" value="0.2" /> mm</label>
+          <label class="row" id="row-count">Quantità <input id="conn-count" type="number" min="1" max="6" step="1" value="1" /></label>
+          <label class="row" id="row-male">Perno su
+            <select id="conn-male"><option value="A">parte selezionata</option><option value="B">resto del modello</option></select>
+          </label>
+        </div>
+        <p class="hint" id="conn-hint"></p>
+        <button id="btn-split" class="primary wide" disabled>✂ Separa parte</button>
+      </section>
+
+      <section id="sec-view">
+        <h3>Vista</h3>
+        <label class="row">Esplodi <input id="explode" type="range" min="0" max="100" value="0" /></label>
+        <label class="check"><input id="chk-wire" type="checkbox" /> Mostra triangoli</label>
+      </section>
+    </aside>
+  </main>
+
+  <footer class="statusbar"><span id="status">Pronto</span><span id="status-right"></span></footer>
+
+  <dialog id="dlg-settings">
+    <form method="dialog">
+      <h3>Impostazioni</h3>
+      <label>Chiave API Gemini
+        <input id="set-key" type="password" autocomplete="off" placeholder="AIza…" />
+      </label>
+      <p class="hint">Facoltativa: abilita il riconoscimento semantico delle parti (es. "capelli"). La chiave resta salvata solo in questo browser e viene inviata solo a Google. Creala su <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>.</p>
+      <label>Modello Gemini
+        <input id="set-model" type="text" value="gemini-2.5-flash" />
+      </label>
+      <p class="hint">Per la segmentazione serve un modello che restituisca maschere (consigliato <code>gemini-2.5-flash</code>).</p>
+      <label>Unità del file
+        <select id="set-units"><option value="1">millimetri</option><option value="10">centimetri</option><option value="1000">metri</option><option value="25.4">pollici</option></select>
+      </label>
+      <div class="dlg-actions">
+        <button id="btn-test-key" type="button">Prova chiave</button>
+        <span class="spacer"></span>
+        <button value="cancel">Annulla</button>
+        <button id="btn-save-settings" value="save" class="primary">Salva</button>
+      </div>
+      <p id="key-test-result" class="hint"></p>
+    </form>
+  </dialog>
+
+  <div id="toasts" class="toasts"></div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
