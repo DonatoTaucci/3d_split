@@ -101,7 +101,12 @@
     <aside class="panel right" id="right-panel">
       <section id="sec-select">
         <h3>Selezione</h3>
-        <p class="hint" id="mode-help">Clicca su una parte del modello: viene riconosciuta e selezionata. Shift+clic aggiunge, Alt+clic toglie.</p>
+        <div class="seg-toggle three" role="radiogroup" title="Cosa fa il clic (Shift = aggiungi, Alt = togli)">
+          <button data-selop="replace" class="active">Nuova</button>
+          <button data-selop="add">＋ Aggiungi</button>
+          <button data-selop="sub">－ Togli</button>
+        </div>
+        <p class="hint" id="mode-help">Clicca su una parte del modello: viene riconosciuta e selezionata.</p>
         <div id="smart-nav" class="smart-nav" hidden>
           <div class="smart-nav-head">
             <button id="btn-cand-prev" title="Parte più piccola">◀</button>

@@ -130,7 +130,9 @@ async function openFile(file) {
         if (!w.tri.length) continue;
         const color = r.color ? new THREE.Color(r.color[0], r.color[1], r.color[2]).getHex() : undefined;
         const kind = ['step', 'stp', 'iges', 'igs', 'brep', 'brp'].includes(res.format) ? 'brep' : r.groups ? 'material' : null;
-        parts.push(new Part(r.name || file.name, w.pos, w.tri, { faceGroup: w.faceGroup, groupKind: kind, color: raws.length === 1 && color === 0xffffff ? undefined : color }));
+        const baseName = file.name.replace(/\.[^.]+$/, '').replace(/^[0-9a-f]{8}-/, '');
+        const genericName = !r.name || /^(Oggetto|Corpo) \d+$/.test(r.name);
+        parts.push(new Part(raws.length === 1 && genericName ? baseName : r.name || baseName, w.pos, w.tri, { faceGroup: w.faceGroup, groupKind: kind, color: raws.length === 1 && color === 0xffffff ? undefined : color }));
       }
       if (!parts.length) throw new Error('Nessun triangolo valido nel file.');
       setModel(parts, file.name.replace(/\.[^.]+$/, ''), res.zUp);
@@ -392,8 +394,13 @@ let downButton = -1;
 function modifierOf(e) {
   if (e.altKey || e.ctrlKey || e.metaKey) return 'sub';
   if (e.shiftKey) return 'add';
-  return 'replace';
+  return state.selOp || 'replace';
 }
+
+document.querySelectorAll('[data-selop]').forEach((b) => (b.onclick = () => {
+  state.selOp = b.dataset.selop;
+  document.querySelectorAll('[data-selop]').forEach((x) => x.classList.toggle('active', x === b));
+}));
 
 canvas.addEventListener('pointerdown', (e) => {
   downPos = [e.clientX, e.clientY];
@@ -401,7 +408,7 @@ canvas.addEventListener('pointerdown', (e) => {
   if (state.mode === 'brush' && e.button === 0 && state.parts.length) {
     const hit = viewer.pick(e.clientX, e.clientY, state.parts);
     if (hit) {
-      state.brushing = { part: hit.part, before: hit.part.sel.slice(), sub: e.altKey || e.ctrlKey || e.metaKey };
+      state.brushing = { part: hit.part, before: hit.part.sel.slice(), sub: modifierOf(e) === 'sub' };
       state.active = hit.part;
       paintAt(hit);
       canvas.setPointerCapture(e.pointerId);
@@ -642,10 +649,10 @@ function updateBrushCursor(hit) {
 // Modes
 // ---------------------------------------------------------------------------
 const MODE_HELP = {
-  smart: 'Clicca su una parte: viene riconosciuta e selezionata. Shift+clic aggiunge, Alt+clic toglie. Usa «Più piccola / Più grande» se la parte non è quella giusta.',
+  smart: 'Clicca su una parte: viene riconosciuta e selezionata. Se non è quella giusta scegline un\'altra tra le «Possibili parti». Shift+clic aggiunge, Alt+clic toglie.',
   segment: 'Clicca su un segmento riconosciuto automaticamente (o dall\'AI). Shift+clic per aggiungerne altri.',
   surface: 'Seleziona una superficie liscia fino agli spigoli più netti dell\'angolo scelto.',
-  brush: 'Dipingi con il tasto sinistro per aggiungere alla selezione, tieni premuto Alt per togliere. Ruota la vista con il tasto destro.',
+  brush: 'Dipingi con il tasto sinistro per aggiungere alla selezione (con «Togli» o Alt per cancellare). Ruota la vista con il tasto destro.',
   component: 'Seleziona un intero corpo separato (non collegato al resto).',
 };
 
