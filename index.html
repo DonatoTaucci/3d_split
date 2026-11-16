@@ -103,9 +103,13 @@
         <h3>Selezione</h3>
         <p class="hint" id="mode-help">Clicca su una parte del modello: viene riconosciuta e selezionata. Shift+clic aggiunge, Alt+clic toglie.</p>
         <div id="smart-nav" class="smart-nav" hidden>
-          <button id="btn-cand-prev" title="Parte più piccola">◀ Più piccola</button>
-          <span id="cand-label">1/1</span>
-          <button id="btn-cand-next" title="Parte più grande">Più grande ▶</button>
+          <div class="smart-nav-head">
+            <button id="btn-cand-prev" title="Parte più piccola">◀</button>
+            <span>Possibili parti <small id="cand-label"></small></span>
+            <button id="btn-cand-next" title="Parte più grande">▶</button>
+          </div>
+          <div id="cand-chips" class="cand-chips"></div>
+          <p class="hint">★ = taglio più netto. Passa sopra per vedere, clicca per scegliere.</p>
         </div>
         <label class="row" id="row-brush" hidden>Raggio pennello <input id="brush-radius" type="range" min="1" max="100" value="15" /><span id="brush-radius-val"></span></label>
         <label class="row" id="row-angle" hidden>Angolo spigoli <input id="surface-angle" type="range" min="1" max="80" value="25" /><span id="surface-angle-val">25°</span></label>

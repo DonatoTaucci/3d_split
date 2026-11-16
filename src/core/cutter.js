@@ -26,7 +26,8 @@ export function fitPlaneToSelection(mesh, sel) {
     const P = new Float64Array(loop.length * 3);
     for (let i = 0; i < loop.length; i++) for (let k = 0; k < 3; k++) P[3 * i + k] = mesh.pos[3 * loop[i] + k];
     const fr = loopFrame(P);
-    if (!best || fr.perimeter > best.perimeter) best = fr;
+    // the main attachment encloses the largest area (a strand touching the body is long but thin)
+    if (!best || fr.area > best.area) best = fr;
   }
   let n = best.normal;
   const d = [c[0] - best.centroid[0], c[1] - best.centroid[1], c[2] - best.centroid[2]];
@@ -70,9 +71,82 @@ function sectionSpan(polys) {
   return Math.hypot(maxx - minx, maxy - miny) || 1;
 }
 
+function tooSmall(spec, maxDepth) {
+  const m = csg.maxConnectorSize(spec, maxDepth);
+  const what = spec.type === 'dovetail' ? 'larghezza' : spec.type === 'peg-square' ? 'lato' : 'diametro';
+  return m >= 1
+    ? `Sezione troppo stretta per questo connettore: ${what} massimo ≈ ${m.toFixed(1)} mm (spessore utile ${(maxDepth * 2).toFixed(1)} mm).`
+    : `Sezione troppo stretta per un connettore (spessore utile ${(maxDepth * 2).toFixed(1)} mm): incolla i pezzi o scegli un altro taglio.`;
+}
+
+function outlineFromSection(sec, res) {
+  const polys = sec.cs.toPolygons().map((p) => p.map((q) => [q[0] ?? q.x, q[1] ?? q.y]));
+  const { u, v } = sec.basis;
+  const o = sec.origin;
+  for (const p of polys) {
+    res.outline.push(p.map((q) => [o[0] + u[0] * q[0] + v[0] * q[1], o[1] + u[1] * q[0] + v[1] * q[1], o[2] + u[2] * q[0] + v[2] * q[1]]));
+  }
+}
+
+function placeOnSection(sec, spec, res) {
+  const pc = csg.placeConnectors(sec.cs, spec.type === 'dovetail' ? 1 : spec.count, csg.connectorClearance(spec));
+  const slide = spec.type === 'dovetail' ? csg.sectionPrincipalAxis(pc.polys) : null;
+  res.placements = csg.planarPlacements(pc.points, sec.basis, sec.origin, slide);
+  res.span = sectionSpan(pc.polys);
+  res.maxDepth = pc.maxDepth;
+  if (!res.placements.length) res.warning = tooSmall(spec, pc.maxDepth);
+}
+
+/**
+ * Cheap plane preview: slice the whole solid (no boolean) and keep the section regions
+ * that belong to the selected part.
+ */
+function planePreview(ctx, res) {
+  const { part, sel, plane, spec } = ctx;
+  const mesh = part.mesh;
+  const { man } = originalManifold(part);
+  const sec = csg.sliceAtPlane(man, plane, mesh.bounds.diag * 1e-5);
+  res.section = sec;
+  if (sec.cs.isEmpty()) { res.warning = 'Il piano non taglia il modello.'; return res; }
+  if (ctx.onlySelected && sel) {
+    const nl = Math.hypot(...plane.normal) || 1;
+    const n = plane.normal.map((x) => x / nl);
+    const o = plane.origin;
+    const band = Math.max(mesh.avgEdgeLen * 4, mesh.bounds.diag * 0.02);
+    const { u, v } = sec.basis;
+    const pts = [];
+    for (let f = 0; f < mesh.nf; f++) {
+      if (!sel[f]) continue;
+      const dx = mesh.faceCenter[3 * f] - o[0], dy = mesh.faceCenter[3 * f + 1] - o[1], dz = mesh.faceCenter[3 * f + 2] - o[2];
+      const h = dx * n[0] + dy * n[1] + dz * n[2];
+      if (h <= 0 || h > band) continue;
+      pts.push([dx * u[0] + dy * u[1] + dz * u[2], dx * v[0] + dy * v[1] + dz * v[2]]);
+    }
+    const regions = sec.cs.decompose();
+    const kept = [];
+    const step = Math.max(1, Math.floor(pts.length / 3000));
+    for (const r of regions) {
+      const polys = r.toPolygons().map((p) => p.map((q) => [q[0] ?? q.x, q[1] ?? q.y]));
+      let hit = false;
+      for (let i = 0; i < pts.length && !hit; i += step) hit = csg.pointInPolys(polys, pts[i][0], pts[i][1]);
+      if (hit) kept.push(r); else r.delete();
+    }
+    if (kept.length) {
+      const w = csg.getW();
+      const merged = kept.length === 1 ? kept[0] : w.CrossSection.union(kept);
+      if (kept.length > 1) kept.forEach((r) => r.delete());
+      sec.cs.delete();
+      sec.cs = merged;
+    }
+  }
+  outlineFromSection(sec, res);
+  if (spec && spec.type !== 'none') placeOnSection(sec, spec, res);
+  return res;
+}
+
 /**
  * Compute connector placements (for preview and for the final cut).
- * ctx: {part, sel, method, plane, spec, onlySelected}
+ * ctx: {part, sel, method, plane, spec, onlySelected, preview}
  * @returns {{placements, outline: number[][][] (3D polylines), warning?, planeSplit?}}
  */
 export function planConnectors(ctx) {
@@ -90,12 +164,20 @@ export function planConnectors(ctx) {
     }
     if (!spec || spec.type === 'none') return res;
     if (spec.type === 'dovetail') { res.warning = 'La coda di rondine richiede il taglio a piano.'; return res; }
-    const mp = csg.membranePlacements(caps[0], spec);
-    res.placements = mp.placements;
-    if (!mp.placements.length) res.warning = `Sezione troppo piccola per il connettore (spessore utile ≈ ${(mp.maxDepth * 2).toFixed(1)} mm).`;
+    // several cut loops (e.g. hair touching the body): use the one with the most room
+    let best = null;
+    for (const cap of caps.slice(0, 8)) {
+      if (cap.loopPositions.length < 9) continue;
+      const mp = csg.membranePlacements(cap, spec);
+      if (!best || mp.placements.length > best.placements.length || (mp.placements.length === best.placements.length && mp.maxDepth > best.maxDepth)) best = mp;
+    }
+    res.placements = best ? best.placements : [];
+    res.maxDepth = best ? best.maxDepth : 0;
+    if (!res.placements.length) res.warning = tooSmall(spec, res.maxDepth);
     return res;
   }
-  // plane
+  if (ctx.preview) return planePreview(ctx, res);
+  // plane (exact)
   const { man, id } = originalManifold(part);
   const ps = csg.planeSplit(man, plane, ctx.onlySelected ? sel : null, id, mesh.faceArea, { diag: mesh.bounds.diag });
   res.planeSplit = ps;
@@ -106,18 +188,9 @@ export function planConnectors(ctx) {
   const eff = { normal: nn, origin: plane.origin.map((x, i) => x + nn[i] * (ps.offset || 0)) };
   const sec = csg.sectionOnPlane(ps.A, eff);
   res.section = sec;
-  const polys = sec.cs.toPolygons().map((p) => p.map((q) => [q[0] ?? q.x, q[1] ?? q.y]));
-  const { u, v } = sec.basis;
-  const o = sec.origin;
-  for (const p of polys) {
-    res.outline.push(p.map((q) => [o[0] + u[0] * q[0] + v[0] * q[1], o[1] + u[1] * q[0] + v[1] * q[1], o[2] + u[2] * q[0] + v[2] * q[1]]));
-  }
+  outlineFromSection(sec, res);
   if (!spec || spec.type === 'none') return res;
-  const pc = csg.placeConnectors(sec.cs, spec.type === 'dovetail' ? 1 : spec.count, csg.connectorClearance(spec));
-  const slide = spec.type === 'dovetail' ? csg.sectionPrincipalAxis(pc.polys) : null;
-  res.placements = csg.planarPlacements(pc.points, sec.basis, sec.origin, slide);
-  res.span = sectionSpan(pc.polys);
-  if (!res.placements.length) res.warning = `Sezione troppo piccola per il connettore (spessore utile ≈ ${(pc.maxDepth * 2).toFixed(1)} mm).`;
+  placeOnSection(sec, spec, res);
   return res;
 }
 

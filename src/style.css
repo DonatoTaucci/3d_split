@@ -123,8 +123,14 @@ code { background: var(--bg); padding: 1px 4px; border-radius: 4px; }
 .info dd.bad { color: var(--danger); }
 .info dd.good { color: var(--ok); }
 
-.smart-nav { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin: 8px 0; }
-.smart-nav span { color: var(--muted); font-variant-numeric: tabular-nums; }
+.smart-nav { margin: 8px 0; padding: 8px; border-radius: var(--radius); background: var(--panel-2); }
+.smart-nav-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.smart-nav-head span { color: var(--text); font-weight: 600; }
+.smart-nav-head small { color: var(--muted); font-weight: 400; }
+.smart-nav-head button { padding: 3px 9px; }
+.cand-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+.cand-chips button { padding: 3px 8px; font-size: 12px; font-variant-numeric: tabular-nums; border-radius: 999px; }
+.smart-nav .hint { margin: 6px 0 0; font-size: 11px; }
 .sel-info { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
 
 .seg-toggle { display: grid; grid-template-columns: 1fr 1fr; gap: 0; margin-bottom: 8px; }

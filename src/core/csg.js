@@ -108,9 +108,10 @@ export function planeSplit(man, plane, sel, originalID, faceArea, opts = {}) {
   const diag = opts.diag ?? (bb ? Math.hypot(bb.max[0] - bb.min[0], bb.max[1] - bb.min[1], bb.max[2] - bb.min[2]) : 100);
   const delta = Math.max(1e-4 * diag, 0.005);
   let last = null;
-  for (const k of [0, 1, -1, 3, -3, 7]) {
-    const res = planeSplitOnce(man, n, d + k * delta, sel, originalID, faceArea);
-    if (res.error || isClean(res.A) && isClean(res.B)) { res.offset = k * delta; if (last) disposeSplit(last); return res; }
+  for (const k of [0, 1, -2, 5]) {
+    const res = planeSplitOnce(man, n, d + k * delta, sel, originalID, faceArea, diag);
+    res.offset = k * delta;
+    if (res.error || (isClean(res.A, diag) && isClean(res.B, diag))) { if (last) disposeSplit(last); return res; }
     if (last) disposeSplit(last);
     last = res;
   }
@@ -119,17 +120,24 @@ export function planeSplit(man, plane, sel, originalID, faceArea, opts = {}) {
 
 function disposeSplit(r) { r.A?.delete(); r.B?.delete(); }
 
-/** no sliver components (tiny volume relative to the piece) */
-function isClean(m) {
+/**
+ * Detect degenerate slivers produced by planes coinciding with flat faces: pieces whose
+ * thickness (volume / area) is essentially zero. Legitimately tiny pieces are fine.
+ */
+function isClean(m, diag) {
   if (!m) return true;
   const parts = m.decompose();
-  const vols = parts.map((p) => Math.abs(manifoldVolume(p)));
-  parts.forEach((p) => p.delete());
-  const tot = vols.reduce((a, b) => a + b, 0);
-  return !vols.some((v) => v < tot * 1e-5);
+  let ok = true;
+  for (const p of parts) {
+    const v = Math.abs(manifoldVolume(p));
+    const a = typeof p.surfaceArea === 'function' ? p.surfaceArea() : 0;
+    if (a > 0 && v / a < diag * 1e-6) ok = false;
+    p.delete();
+  }
+  return ok;
 }
 
-function planeSplitOnce(man, n, d, sel, originalID, faceArea) {
+function planeSplitOnce(man, n, d, sel, originalID, faceArea, diag) {
   const w = getW();
   const [pos, neg] = man.splitByPlane(n, d);
   if (pos.isEmpty()) { pos.delete(); return { A: null, B: neg, error: 'Il piano non taglia il modello.' }; }
@@ -172,16 +180,26 @@ function planeSplitOnce(man, n, d, sel, originalID, faceArea) {
     pos.delete();
     return { A: Am, B: neg };
   }
-  // unselected pieces stay with B: subtract A from the original (avoids fusing touching faces)
-  let Bm = man.subtract(Am);
-  if (!isClean(Bm)) {
+  // unselected pieces go back to B. They touch the lower half only on the cut plane, so a
+  // union is cheap; if it leaves slivers, fall back to subtracting A from the original.
+  let Bm = w.Manifold.union([neg, ...Bextra]);
+  if (!isClean(Bm, diag)) {
     Bm.delete();
-    Bm = w.Manifold.union([neg, ...Bextra]);
+    Bm = man.subtract(Am);
   }
   Bextra.forEach((m) => m.delete());
   pos.delete();
   neg.delete();
   return { A: Am, B: Bm };
+}
+
+/** Cross-section of a whole solid by a plane (cheap: no boolean). */
+export function sliceAtPlane(man, plane, eps = 1e-4) {
+  const { u, v, n } = planeBasis(plane.normal);
+  const local = man.transform(invMat(u, v, n, plane.origin));
+  const cs = local.slice(eps);
+  local.delete();
+  return { cs, basis: { u, v, n }, origin: plane.origin };
 }
 
 /** Cross-section of manifold `A` lying on the plane, in plane-local 2D coordinates. */
@@ -198,7 +216,7 @@ export function sectionOnPlane(A, plane) {
 // Connector placement on a 2D section
 // ---------------------------------------------------------------------------
 
-function pointInPolys(polys, x, y) {
+export function pointInPolys(polys, x, y) {
   let inside = false;
   for (const poly of polys) {
     const m = poly.length;
@@ -502,7 +520,7 @@ function rayTri(o, d, Q, i0, i1, i2) {
 }
 
 export function connectorClearance(spec) {
-  const wall = Math.max(1.2, spec.diameter * 0.3);
+  const wall = Math.max(0.8, spec.diameter * 0.25);
   if (spec.type === 'dovetail') return spec.diameter / 2 + spec.length * Math.tan(((spec.angle ?? 15) * Math.PI) / 180) + spec.tolerance + 1;
   if (spec.type === 'peg-square') return spec.diameter * 0.71 + spec.tolerance + wall;
   return spec.diameter / 2 + spec.tolerance + wall;
@@ -510,4 +528,19 @@ export function connectorClearance(spec) {
 
 export function manifoldVolume(m) {
   return typeof m.volume === 'function' ? m.volume() : m.getProperties?.().volume ?? 0;
+}
+
+/** Largest connector size (diameter / width, mm) that fits a section with the given inscribed radius. */
+export function maxConnectorSize(spec, maxDepth) {
+  const tol = spec.tolerance;
+  if (spec.type === 'dovetail') {
+    const ta = Math.tan(((spec.angle ?? 15) * Math.PI) / 180);
+    return Math.max(0, 2 * (maxDepth - tol - 1 - spec.length * ta));
+  }
+  const k = spec.type === 'peg-square' ? 0.71 : 0.5;
+  // clearance = k d + tol + max(0.8, 0.25 d)
+  const d1 = (maxDepth - tol - 0.8) / k; // wall = 0.8 (d <= 3.2)
+  const d2 = (maxDepth - tol) / (k + 0.25); // wall = 0.25 d
+  const d = d1 <= 3.2 ? d1 : d2;
+  return Math.max(0, Math.floor(d * 10) / 10);
 }

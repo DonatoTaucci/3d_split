@@ -265,15 +265,26 @@ export function fillHoles(mesh, maxLoopFrac = 1) {
     const list = out.get(startV);
     while (list && list.length) {
       const loop = [startV];
+      const at = new Map([[startV, 0]]);
       let cur = list.pop();
       let guard = 0;
-      while (cur !== startV && guard++ < 1e7) {
+      let closed = false;
+      while (guard++ < 1e7) {
+        if (at.has(cur)) {
+          // revisited a vertex: the part after its first visit is a simple loop
+          const j = at.get(cur);
+          const sub = loop.splice(j);
+          for (const v of sub) at.delete(v);
+          if (sub.length >= 3) loops.push(sub);
+          if (cur === startV && j === 0) { closed = true; break; }
+        }
+        at.set(cur, loop.length);
         loop.push(cur);
         const l2 = out.get(cur);
         if (!l2 || !l2.length) break;
         cur = l2.pop();
       }
-      if (cur === startV && loop.length >= 3) loops.push(loop);
+      void closed;
     }
   }
   const pos = Array.from(mesh.pos);
@@ -322,6 +333,7 @@ export function orientConsistently(mesh) {
         const g = mesh.other(l, f);
         if (visited[g]) continue;
         const e = linkE[l];
+        if (mesh.edgeHEStart[e + 1] - mesh.edgeHEStart[e] !== 2) continue; // only across manifold edges
         const a = edgeV[2 * e], b = edgeV[2 * e + 1];
         // consistent if f has a->b and g has b->a (or vice versa)
         const fab = hasDirected(f, a, b);

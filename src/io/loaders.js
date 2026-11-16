@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { ThreeMFLoader } from 'three/addons/loaders/3MFLoader.js';
+import { parse3MF } from './threemf.js';
 import { PLYLoader } from 'three/addons/loaders/PLYLoader.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import occtJsUrl from 'occt-import-js/dist/occt-import-js.js?url';
@@ -38,8 +39,13 @@ export async function loadModelBuffer(buf, name, ext, onProgress = () => {}) {
       break;
     }
     case '3mf': {
-      const obj = new ThreeMFLoader().parse(buf);
-      meshes = objectToRaw(obj);
+      try {
+        meshes = parse3MF(buf);
+      } catch (e) {
+        console.warn('fast 3MF parser failed, falling back to three.js loader', e);
+        meshes = objectToRaw(new ThreeMFLoader().parse(buf));
+      }
+      if (meshes.length > 64) meshes = [mergeRaw(meshes, 'Modello')];
       break;
     }
     case 'ply': {

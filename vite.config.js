@@ -9,5 +9,6 @@ export default defineConfig({
   optimizeDeps: {
     exclude: ['manifold-3d'],
   },
+  worker: { format: 'es' },
   server: { host: true },
 });

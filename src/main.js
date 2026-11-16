@@ -1,6 +1,5 @@
 import './style.css';
 import * as THREE from 'three';
-import manifoldWasmUrl from 'manifold-3d/manifold.wasm?url';
 import { Viewer, segmentColor } from './viewer.js';
 import { loadModelFile, ACCEPTED, mergeRaw } from './io/loaders.js';
 import { toSTL, toOBJ, to3MF, zipFiles, downloadBytes, safeFileName } from './io/exporters.js';
@@ -10,10 +9,9 @@ import {
   smartSelect, autoSegment, refineFaceLabels, growSurface, selectComponent, brushFaces,
   growMask, shrinkMask, cleanFaceMask, maskBoundaryEdges,
 } from './core/segment.js';
-import { fillHoles, orientConsistently } from './core/split.js';
-import { initManifold } from './core/csg.js';
-import { fitPlaneToSelection, planConnectors, disposePlan, performCut, disposePartManifold, selectionCentroid } from './core/cutter.js';
-import { buildDemoBust } from './core/demo.js';
+import { repairMesh } from './core/repair.js';
+import { fitPlaneToSelection, selectionCentroid } from './core/cutter.js';
+import { GeoClient } from './geoClient.js';
 import * as AI from './ai/gemini.js';
 
 const $ = (id) => document.getElementById(id);
@@ -39,6 +37,7 @@ const state = {
   brushing: false,
   plane: null, // {object, baseOrigin, normal}
   previewTimer: 0,
+  previewSeq: 0,
   selName: null,
   wire: false,
 };
@@ -94,11 +93,9 @@ function status(msg) { $('status').textContent = msg; }
 
 const fmt = (x, d = 1) => (Math.abs(x) >= 100 ? x.toFixed(0) : x.toFixed(d));
 
-let manifoldReady = null;
-function ensureManifold() {
-  if (!manifoldReady) manifoldReady = initManifold(manifoldWasmUrl);
-  return manifoldReady;
-}
+const geo = new GeoClient();
+geo.call('init').catch((e) => console.warn('worker init', e));
+const disposePartManifold = (p) => geo.dropPart(p);
 
 // ---------------------------------------------------------------------------
 // Loading
@@ -151,8 +148,7 @@ async function openFile(file) {
 async function loadDemo() {
   try {
     await busy('Creazione modello di esempio…', async () => {
-      await ensureManifold();
-      const d = buildDemoBust();
+      const d = await geo.call('demo');
       const w = weld(d.pos, d.tri);
       setModel([new Part('Busto di esempio', w.pos, w.tri)], 'busto-esempio', true);
     });
@@ -254,7 +250,7 @@ function snapToGeometry(an, pm) {
       if (iou > best.iou) best = { mask: c.mask, iou };
     }
   }
-  return best.iou >= 0.55 ? best : { mask: pm, iou: best.iou };
+  return best.iou >= 0.7 ? best : { mask: pm, iou: best.iou };
 }
 
 function patchMaskToFaces(part, patchMask) {
@@ -520,9 +516,28 @@ function updateSmartNav() {
   const s = state.smart;
   $('smart-nav').hidden = !s || state.mode !== 'smart';
   if (!s) return;
-  $('cand-label').textContent = `${s.pos + 1} / ${s.order.length}`;
+  $('cand-label').textContent = `${s.pos + 1} di ${s.order.length}`;
   $('btn-cand-prev').disabled = s.pos <= 0;
   $('btn-cand-next').disabled = s.pos >= s.order.length - 1;
+  const box = $('cand-chips');
+  box.innerHTML = '';
+  const total = s.part.mesh.totalArea || 1;
+  const bestPos = s.order.indexOf(s.res.best);
+  s.order.forEach((ci, k) => {
+    const c = s.res.candidates[ci];
+    const b = document.createElement('button');
+    const pct = (100 * c.area) / total;
+    b.textContent = `${k === bestPos ? '★ ' : ''}${c.whole ? 'Tutto il corpo' : `${pct < 1 ? pct.toFixed(1) : pct.toFixed(0)}%`}`;
+    b.title = `${c.whole ? 'Intero corpo collegato' : `${pct.toFixed(1)}% della superficie`} · nettezza del taglio ${(1 / (0.1 + c.score)).toFixed(1)}`;
+    b.classList.toggle('active', k === s.pos);
+    b.onclick = () => { s.pos = k; setHover(null); applySmartCandidate(); };
+    b.onmouseenter = () => {
+      const g = s.part.analysis.graph;
+      setHover({ part: s.part, key: `cand:${ci}`, mask: g.toFaceMask(c.mask, s.part.mesh.nf) });
+    };
+    b.onmouseleave = () => setHover(null);
+    box.appendChild(b);
+  });
 }
 
 $('btn-cand-prev').onclick = () => { if (state.smart && state.smart.pos > 0) { state.smart.pos--; applySmartCandidate(); } };
@@ -764,7 +779,7 @@ async function aiAnalyze() {
         const pm = new Uint8Array(an.graph.n);
         for (let p = 0; p < an.graph.n; p++) if (patchLab[p] === i) pm[p] = 1;
         const sn = snapToGeometry(an, pm);
-        if (sn.iou < 0.55) continue;
+        if (sn.iou < 0.7) continue;
         for (let p = 0; p < an.graph.n; p++) {
           if (sn.mask[p] && !claimed[p]) { snappedLab[p] = i; claimed[p] = 1; }
           else if (!sn.mask[p] && snappedLab[p] === i && !claimed[p]) snappedLab[p] = -2; // released
@@ -1051,13 +1066,18 @@ async function updatePreview() {
   if (state.method === 'plane' && !state.plane) return;
   if (state.method === 'membrane' && spec.type === 'none') return;
   let plan;
+  const seq = ++state.previewSeq;
+  const hint = $('conn-hint');
+  hint.textContent = 'Calcolo anteprima del taglio…';
   try {
-    await ensureManifold();
-    plan = planConnectors({ part, sel: part.sel, method: state.method, plane: currentPlane(part), spec, onlySelected: $('chk-plane-only-sel').checked && hasSel });
+    await geo.ensurePart(part);
+    plan = await geo.call('plan', { partId: part.id, sel: part.sel, method: state.method, plane: currentPlane(part), spec, onlySelected: $('chk-plane-only-sel').checked && hasSel });
   } catch (err) {
-    $('conn-hint').textContent = err.message;
+    if (seq === state.previewSeq) hint.textContent = err.message;
     return;
   }
+  if (seq !== state.previewSeq || part !== state.active || !part.object) return; // stale
+  clearPreview();
   const g = new THREE.Group();
   for (const line of plan.outline) {
     if (line.length < 2) continue;
@@ -1071,9 +1091,8 @@ async function updatePreview() {
   for (const pl of plan.placements) g.add(connectorGhost(spec, pl));
   part._preview = g;
   part.object.add(g);
-  if (plan.warning) $('conn-hint').textContent = plan.warning;
+  if (plan.warning) hint.textContent = plan.warning;
   else updateConnUI();
-  disposePlan(plan);
   viewer.requestRender();
 }
 
@@ -1117,9 +1136,10 @@ async function doSplit() {
   if (state.method === 'membrane' && !hasSel) { toast('Seleziona prima una parte.', 'error'); return; }
   try {
     await busy('Taglio in corso…', async () => {
-      await ensureManifold();
       const t0 = performance.now();
-      const res = performCut({ part, sel: part.sel, method: state.method, plane: currentPlane(part), spec, onlySelected: $('chk-plane-only-sel').checked && hasSel });
+      state.previewSeq++;
+      await geo.ensurePart(part);
+      const res = await geo.call('cut', { partId: part.id, sel: part.sel, method: state.method, plane: currentPlane(part), spec, onlySelected: $('chk-plane-only-sel').checked && hasSel });
       const nameA = state.selName ? capitalize(state.selName) : state.method === 'plane' && !hasSel ? `${part.name} (sopra)` : `${part.name} – parte`;
       const nameB = state.method === 'plane' && !hasSel ? `${part.name} (sotto)` : `${part.name} – resto`;
       const wA = weld(res.A.pos, res.A.tri), wB = weld(res.B.pos, res.B.tri);
@@ -1149,6 +1169,12 @@ async function doSplit() {
       applyExplode();
       refreshAll();
       for (const w of res.warnings) toast(w, 'error', 7000);
+      if (state.method === 'plane' && hasSel) {
+        const selArea = selectedStats(part).area;
+        if (pA.mesh.totalArea > selArea * 1.8 + part.mesh.totalArea * 0.02) {
+          toast('Il piano ha staccato molto più della selezione (attraversa anche altre parti). Se non è quello che volevi, premi Annulla e usa «Bordo naturale».', 'error', 10000);
+        }
+      }
       status(`Separato in ${((performance.now() - t0) / 1000).toFixed(1)} s: «${pA.name}» e «${pB.name}»`);
       toast(`Parte separata: «${pA.name}». Puoi esportarla da Esporta ▾`, 'ok');
     });
@@ -1329,12 +1355,8 @@ $('btn-repair').onclick = async () => {
   try {
     await busy('Riparazione mesh…', async () => {
       const before = state.parts.slice();
-      let m = part.mesh;
-      const o = orientConsistently(m);
-      m = new MeshData(m.pos, o.tri);
-      const fh = fillHoles(m);
-      const w = weld(fh.pos, fh.tri);
-      const np = new Part(part.name, w.pos, w.tri, { color: part.color });
+      const { mesh: fixed, report } = repairMesh(part.mesh);
+      const np = new Part(part.name, null, null, { mesh: fixed, color: part.color });
       np.explodeDir.copy(part.explodeDir);
       const idx = state.parts.indexOf(part);
       viewer.disposePart(part);
@@ -1345,7 +1367,12 @@ $('btn-repair').onclick = async () => {
       pushUndo({ type: 'parts', before, after: state.parts.slice(), activeBefore: part, activeAfter: np });
       applyExplode();
       refreshAll();
-      toast(`Riparata: ${fh.filled} buchi chiusi, ${o.flips} triangoli riorientati. ${np.mesh.isClosed() ? 'La mesh ora è chiusa.' : 'Restano difetti non riparabili automaticamente.'}`, np.mesh.isClosed() ? 'ok' : 'error', 7000);
+      const bits = [];
+      if (report.holesFilled) bits.push(`${report.holesFilled} buchi chiusi`);
+      if (report.removedFaces) bits.push(`${report.removedFaces} triangoli non-manifold rimossi`);
+      if (report.flipped) bits.push(`${report.flipped} triangoli riorientati`);
+      if (report.removedSpecks) bits.push(`${report.removedSpecks} frammenti eliminati`);
+      toast(`Riparazione: ${bits.join(', ') || 'nessun difetto trovato'}. ${np.mesh.isClosed() ? 'La mesh ora è chiusa.' : 'Restano difetti non riparabili automaticamente.'}`, np.mesh.isClosed() ? 'ok' : 'error', 8000);
     });
   } catch (err) {
     toast(err.message, 'error');
