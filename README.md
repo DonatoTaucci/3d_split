@@ -71,8 +71,9 @@ npm run build
 
 ### Pubblicazione su GitHub Pages
 
-Il workflow `.github/workflows/deploy.yml` esegue test e build e pubblica il sito a ogni push su `main`.
+Il workflow `.github/workflows/deploy.yml` esegue test e build a ogni push e pubblica il sito quando il push arriva sul **branch predefinito** del repository.
 Per attivarlo una volta: *Settings → Pages → Build and deployment → Source: GitHub Actions*. Il sito sarà su `https://<utente>.github.io/3d_split/`.
+Puoi anche avviarlo a mano da *Actions → Deploy su GitHub Pages → Run workflow*.
 
 ### Struttura
 
