@@ -89,7 +89,7 @@ export function renderViews(viewer, part, opts = {}) {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0xffffff);
   const geom = part.object.geometry;
-  const shadedMat = new THREE.MeshStandardMaterial({ color: 0xb9b9b9, roughness: 0.7, metalness: 0.0, side: THREE.DoubleSide });
+  const shadedMat = opts.material || new THREE.MeshStandardMaterial({ color: 0xb9b9b9, roughness: 0.7, metalness: 0.0, side: THREE.DoubleSide });
   const idMat = new THREE.ShaderMaterial({
     vertexShader: `flat varying int vFace;
 void main() { vFace = gl_VertexID / 3; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
@@ -163,11 +163,12 @@ void main() { int id = vFace + 1; gl_FragColor = vec4(float(id & 255) / 255.0, f
         ids[y * S + x] = (px[o] | (px[o + 1] << 8) | (px[o + 2] << 16)) - 1;
       }
     }
-    views.push({ name: v.name, jpeg, ids, size: S });
+    views.push({ name: v.name, jpeg, ids, size: S, ...(opts.keepImage ? { image: img } : {}) });
   }
   renderer.setRenderTarget(prevTarget);
   renderer.setClearColor(prevClear, prevAlpha);
-  rtColor.dispose(); rtId.dispose(); shadedMat.dispose(); idMat.dispose();
+  rtColor.dispose(); rtId.dispose(); idMat.dispose();
+  if (!opts.material) shadedMat.dispose();
   return views;
 }
 

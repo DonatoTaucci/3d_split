@@ -14,6 +14,8 @@ import { segmentRegion } from './core/region.js';
 import { fitPlaneToSelection, selectionCentroid } from './core/cutter.js';
 import { GeoClient } from './geoClient.js';
 import * as AI from './ai/gemini.js';
+import { PROVIDERS, providerConfig, isConfigured, describeProvider, listModels, testConnection, looksLikeVisionModel } from './ai/providers.js';
+import { renderMarkedViews, nameSegments, findSegments } from './ai/marks.js';
 
 const $ = (id) => document.getElementById(id);
 const PART_COLORS = [0xc9ccd4, 0x8ec5ff, 0xffd27a, 0xa7e3a1, 0xf4a6c8, 0xc3b1f5, 0x9fe3e0, 0xf7b98b];
@@ -881,17 +883,83 @@ function applyFocus() {
 }
 
 function requireKey() {
-  if (!state.settings.key) {
-    toast('Inserisci la chiave API Gemini nelle Impostazioni per usare l\'AI.', 'error', 6000);
+  const cfg = providerConfig(state.settings);
+  if (!isConfigured(cfg)) {
+    toast(cfg.provider === 'gemini'
+      ? 'Scegli nelle Impostazioni il servizio di intelligenza artificiale (chiave Gemini, Ollama o LM Studio).'
+      : `Scegli nelle Impostazioni il modello da usare con ${PROVIDERS[cfg.provider].label}.`, 'error', 7000);
     openSettings();
     return false;
   }
   return true;
 }
 
+function updateAiTitle() {
+  const cfg = providerConfig(state.settings);
+  $('ai-provider').textContent = isConfigured(cfg) ? `· ${describeProvider(cfg)}` : '· da configurare';
+}
+
+/** local models: name the numbered geometric segments */
+async function aiAnalyzeMarks(part, cfg) {
+  if (!part.segFace) await runAutoSegment(part);
+  const label = PROVIDERS[cfg.provider].label;
+  await busy(`${label}: preparo le viste…`, async () => {
+    refreshSegDisplay(part);
+    const views = renderMarkedViews(viewer, part);
+    const res = await nameSegments(cfg, views, (k, n) => { $('busy-text').textContent = `${label} sta guardando la vista ${k + 1} di ${n}… (con un modello locale può volerci un po')`; });
+    if (!res.names.size) throw new Error('Il modello non ha riconosciuto nessuna zona.');
+    const before = snapshotSeg(part);
+    // zones with the same name become one segment
+    const byName = new Map();
+    for (const [l, n] of res.names) { if (!byName.has(n)) byName.set(n, []); byName.get(n).push(l); }
+    const target = new Map();
+    for (const ls of byName.values()) { const t = Math.min(...ls); for (const l of ls) target.set(l, t); }
+    for (let f = 0; f < part.segFace.length; f++) { const t = target.get(part.segFace[f]); if (t !== undefined) part.segFace[f] = t; }
+    const names = part.segNames ? part.segNames.slice() : [];
+    for (let k = names.length; k < part.segCount; k++) names[k] = null;
+    for (const [n, ls] of byName) names[Math.min(...ls)] = n;
+    part.segNames = names;
+    pushUndo({ type: 'seg', part, before, after: snapshotSeg(part) });
+    refreshSegDisplay(part);
+    renderSegList();
+    setMode('segment');
+    $('ai-status').textContent = res.object ? `Oggetto: ${res.object}` : '';
+    toast(`Riconosciute: ${[...byName.keys()].join(', ')}`, 'ok', 8000);
+  });
+}
+
+/** local models: which numbered segments are «query»? */
+async function aiSelectMarks(part, cfg, q) {
+  if (!part.segFace) await runAutoSegment(part);
+  // segments already named like the query: no need to ask
+  const wanted = q.toLowerCase().trim();
+  if (part.segNames) {
+    const m = new Uint8Array(part.mesh.nf);
+    let any = false;
+    for (let f = 0; f < m.length; f++) { const l = part.segFace[f]; if (l >= 0 && part.segNames[l]?.toLowerCase() === wanted) { m[f] = 1; any = true; } }
+    if (any) { setSelection(part, m, true, q); toast(`Selezionato: ${q}`, 'ok'); return; }
+  }
+  const label = PROVIDERS[cfg.provider].label;
+  await busy(`${label} cerca «${q}»…`, async () => {
+    refreshSegDisplay(part);
+    const views = renderMarkedViews(viewer, part);
+    const set = await findSegments(cfg, views, q, (k, n) => { $('busy-text').textContent = `${label} cerca «${q}»: vista ${k + 1} di ${n}…`; });
+    if (!set.size) throw new Error(`«${q}» non trovato. Prova con un altro nome, oppure ✂ per dividere meglio la zona.`);
+    const m = new Uint8Array(part.mesh.nf);
+    for (let f = 0; f < m.length; f++) if (set.has(part.segFace[f])) m[f] = 1;
+    setSelection(part, m, true, q);
+    toast(`Selezionato: ${q} (${set.size} ${set.size === 1 ? 'zona' : 'zone'})`, 'ok');
+  });
+}
+
 async function aiAnalyze() {
   const part = state.active;
   if (!part || !requireKey()) return;
+  const cfg = providerConfig(state.settings);
+  if (cfg.provider !== 'gemini') {
+    try { await aiAnalyzeMarks(part, cfg); } catch (err) { console.error(err); toast(err.message, 'error', 10000); }
+    return;
+  }
   const an = await ensureAnalysis(part);
   const { key, model } = state.settings;
   try {
@@ -977,6 +1045,11 @@ async function aiSelect() {
   const part = state.active;
   const q = $('ai-query').value.trim();
   if (!part || !q || !requireKey()) return;
+  const cfg = providerConfig(state.settings);
+  if (cfg.provider !== 'gemini') {
+    try { await aiSelectMarks(part, cfg, q); } catch (err) { console.error(err); toast(err.message, 'error', 10000); }
+    return;
+  }
   const an = await ensureAnalysis(part);
   const { key, model } = state.settings;
   try {
@@ -1603,27 +1676,100 @@ function uniqueNames(list) {
 // ---------------------------------------------------------------------------
 // Settings
 // ---------------------------------------------------------------------------
-function openSettings() {
-  $('set-key').value = state.settings.key || '';
-  $('set-model').value = state.settings.model || AI.DEFAULT_MODEL;
-  $('set-units').value = state.settings.units || '1';
+let dlg = null; // settings being edited in the dialog
+
+function localHelp(provider) {
+  const origin = location.origin;
+  const common = '<p>Con i modelli locali le parti vengono prima trovate dalla geometria e numerate; il modello dice che cosa sono. Senza scheda video ogni vista può richiedere da qualche secondo a un minuto.</p>';
+  if (provider === 'ollama') {
+    return `<b>Come collegare Ollama</b><ol>
+<li>Installa Ollama da <a href="https://ollama.com/download" target="_blank" rel="noopener">ollama.com</a> e scarica un modello che legge le immagini, per esempio <code>ollama pull qwen2.5vl:7b</code> (oppure <code>gemma3</code>, <code>llama3.2-vision</code>).</li>
+<li>Permetti a questo sito di usarlo: imposta la variabile d'ambiente <code>OLLAMA_ORIGINS</code> a <code>${origin}</code>. Su Windows, nel Prompt dei comandi: <code>setx OLLAMA_ORIGINS "${origin}"</code>, poi chiudi Ollama dall'icona vicino all'orologio e riaprilo.</li>
+<li>Premi <b>↻ Elenco</b>, scegli il modello e poi <b>Prova connessione</b>. Se il browser chiede di consentire l'accesso alla rete locale, accetta.</li></ol>${common}`;
+  }
+  if (provider === 'lmstudio') {
+    return `<b>Come collegare LM Studio</b><ol>
+<li>In LM Studio scarica e carica un modello con visione (es. <i>Qwen2.5-VL 7B</i> o <i>Gemma 3</i>).</li>
+<li>Apri la scheda <b>Developer</b>, avvia il server (porta 1234) e nelle sue impostazioni attiva <b>Enable CORS</b>.</li>
+<li>Premi <b>↻ Elenco</b>, scegli il modello e poi <b>Prova connessione</b>. Se il browser chiede di consentire l'accesso alla rete locale, accetta.</li></ol>${common}`;
+  }
+  return `<b>Server compatibile OpenAI</b><p>Funziona con llama.cpp, vLLM, LocalAI, Jan e simili: indica l'indirizzo base (es. <code>http://localhost:8080/v1</code>), un modello che accetti immagini e abilita CORS per <code>${origin}</code>.</p>${common}`;
+}
+
+function dialogToSettings() {
+  const s = dlg;
+  const p = $('set-provider').dataset.shown || 'gemini';
+  s.key = $('set-key').value.trim();
+  s.model = $('set-model').value.trim() || AI.DEFAULT_MODEL;
+  if (p !== 'gemini') {
+    s[`${p}Url`] = $('set-url').value.trim() || PROVIDERS[p].defaultUrl;
+    s[`${p}Model`] = $('set-local-model').value.trim();
+    if (p === 'openai') s.openaiKey = $('set-local-key').value.trim();
+  }
+  s.provider = $('set-provider').value;
+  s.units = $('set-units').value;
+  return s;
+}
+
+function showProvider(p) {
+  $('set-provider').dataset.shown = p;
+  $('set-gemini').hidden = p !== 'gemini';
+  $('set-local').hidden = p === 'gemini';
+  if (p !== 'gemini') {
+    const cfg = providerConfig({ ...dlg, provider: p });
+    $('set-url').value = cfg.url;
+    $('set-local-model').value = cfg.model;
+    $('set-local-key').value = dlg.openaiKey || '';
+    $('row-local-key').hidden = p !== 'openai';
+    $('local-help').innerHTML = localHelp(p);
+    $('model-list').innerHTML = '';
+  }
   $('key-test-result').textContent = '';
+}
+
+function openSettings() {
+  dlg = { ...state.settings };
+  $('set-provider').value = PROVIDERS[dlg.provider] ? dlg.provider : 'gemini';
+  $('set-key').value = dlg.key || '';
+  $('set-model').value = dlg.model || AI.DEFAULT_MODEL;
+  $('set-units').value = dlg.units || '1';
+  showProvider($('set-provider').value);
   $('dlg-settings').showModal();
 }
+
+$('set-provider').onchange = () => {
+  dialogToSettings();
+  showProvider($('set-provider').value);
+};
 $('btn-settings').onclick = openSettings;
 $('btn-save-settings').onclick = () => {
-  state.settings.key = $('set-key').value.trim();
-  state.settings.model = $('set-model').value.trim() || AI.DEFAULT_MODEL;
-  state.settings.units = $('set-units').value;
+  state.settings = { ...dialogToSettings() };
   AI.saveSettings(state.settings);
+  updateAiTitle();
   toast('Impostazioni salvate (l\'unità vale per i prossimi file aperti).', 'ok');
+};
+$('btn-list-models').onclick = async () => {
+  const out = $('key-test-result');
+  const cfg = providerConfig(dialogToSettings());
+  out.textContent = 'Lettura dei modelli…';
+  try {
+    const models = await listModels(cfg);
+    $('model-list').innerHTML = models.map((m) => `<option value="${m.replace(/"/g, '&quot;')}">${looksLikeVisionModel(m) ? 'legge le immagini' : ''}</option>`).join('');
+    if (!$('set-local-model').value && models.length) $('set-local-model').value = models.find(looksLikeVisionModel) || models[0];
+    const vision = models.filter(looksLikeVisionModel);
+    out.textContent = models.length
+      ? `✓ ${models.length} modelli trovati${vision.length ? `, con visione: ${vision.join(', ')}` : ' (nessuno sembra leggere le immagini: scaricane uno con visione)'}.`
+      : 'Server raggiungibile ma senza modelli: scaricane uno con visione.';
+  } catch (err) {
+    out.textContent = `✗ ${err.message}`;
+  }
 };
 $('btn-test-key').onclick = async () => {
   const out = $('key-test-result');
-  out.textContent = 'Verifica in corso…';
+  out.textContent = 'Verifica in corso… (un modello locale può impiegare qualche secondo a caricarsi)';
   try {
-    const r = await AI.testKey($('set-key').value.trim(), $('set-model').value.trim() || AI.DEFAULT_MODEL);
-    out.textContent = `✓ La chiave funziona (risposta: ${r.slice(0, 40)})`;
+    const r = await testConnection(providerConfig(dialogToSettings()));
+    out.textContent = r.message;
   } catch (err) {
     out.textContent = `✗ ${err.message}`;
   }
@@ -1660,6 +1806,7 @@ $('btn-redo').onclick = redo;
 setMode('smart');
 updateConnUI();
 updateAutoUI();
+updateAiTitle();
 refreshAll();
 window.__app.loadDemo = loadDemo;
 window.__app.openFile = openFile;

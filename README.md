@@ -16,7 +16,7 @@ Tutto gira **nel browser**: i file non vengono caricati su nessun server.
 | **Ridividi una zona** | ✂ accanto a un segmento, o *Ridividi solo la zona selezionata*: riconosce di nuovo le parti solo lì, con più dettaglio, senza toccare il resto (si annulla con Ctrl+Z) |
 | **Vedere cosa si stacca** | *Mostra: Tutto / Attenua resto / Solo selezione* evidenzia esattamente la porzione che verrà esportata |
 | **Altri strumenti** | ▱ Superficie (fino agli spigoli), 🖌 Pennello (aggiungi / Alt per togliere), ⬢ Corpo separato, Nuova/Aggiungi/Togli, Espandi/Riduci/Inverti |
-| **AI (facoltativa)** | Con una chiave Gemini: *Riconosci e nomina le parti* (es. "capelli", "braccio destro") oppure scrivi cosa selezionare |
+| **AI (facoltativa)** | Gemini online oppure un modello sul tuo computer con Ollama / LM Studio: *Riconosci e nomina le parti* (es. "capelli", "braccio destro") oppure scrivi cosa selezionare |
 | **Taglio** | *Bordo naturale*: la giunzione segue esattamente il contorno della parte (superficie di chiusura curva). *Piano*: taglio piatto, regolabile con frecce/rotazione, stampabile senza supporti |
 | **Connettori** | Perno tondo, perno quadrato (anti-rotazione), sedi per magneti, coda di rondine scorrevole (solo piano), con anteprima |
 | **Misure automatiche** | Per ogni taglio calcola diametro, lunghezza e numero di connettori dalla forma della sezione e dallo spessore reale dei due pezzi (il foro non buca mai l'altro lato); per i magneti sceglie una misura standard (3×1 … 15×3 mm). Modificando a mano un valore si passa alle misure manuali |
@@ -43,16 +43,37 @@ Scorciatoie: `S` parte · `G` segmento · `U` superficie · `B` pennello · `C` 
 - I magneti più comuni sono 6×3 mm o 5×2 mm: imposta diametro e spessore del magnete, la tolleranza viene aggiunta automaticamente.
 - Su figure piccole il collo può essere troppo sottile per un perno: in quel caso incolla i pezzi o taglia in un punto più spesso.
 
-## Intelligenza artificiale (Gemini)
+## Intelligenza artificiale (facoltativa)
 
-È **facoltativa**. Senza chiave tutto funziona con il riconoscimento geometrico; con la chiave Gemini il programma riconosce le parti per *significato* (capelli, viso, vestiti…), utile quando non c'è una piega netta tra le parti.
+Senza AI tutto funziona con il riconoscimento geometrico. Con l'AI il programma riconosce le parti per *significato* (capelli, viso, vestiti…) e puoi scrivere cosa selezionare. In ⚙ *Impostazioni → Intelligenza artificiale* scegli il servizio:
 
-1. Crea una chiave su <https://aistudio.google.com/apikey>.
-2. ⚙ *Impostazioni* → incolla la chiave → *Prova chiave* → *Salva*.
+| Servizio | Come lavora | Note |
+|---|---|---|
+| **Google Gemini** (online) | Gemini restituisce le maschere delle parti in 6 viste, riportate sui triangoli e agganciate ai bordi geometrici | Il più preciso. Serve una chiave da <https://aistudio.google.com/apikey>; consigliato `gemini-2.5-flash` |
+| **Ollama** (sul tuo computer) | Le parti trovate dalla geometria vengono colorate e numerate; il modello dice che cosa sono i numeri | Gratis e offline. Serve un modello con visione, es. `qwen2.5vl:7b`, `gemma3`, `llama3.2-vision` |
+| **LM Studio** (sul tuo computer) | Come Ollama | Carica un modello con visione (es. Qwen2.5-VL, Gemma 3) |
+| **Server compatibile OpenAI** | Come Ollama | llama.cpp, vLLM, LocalAI, Jan…; chiave API facoltativa |
 
-La chiave resta salvata **solo nel tuo browser** (localStorage) e viene inviata soltanto alle API di Google. Modello consigliato: `gemini-2.5-flash` (restituisce maschere di segmentazione).
+Chiavi e impostazioni restano salvate **solo nel tuo browser**.
 
-Come funziona: il modello viene renderizzato da 6 angolazioni; per ogni vista viene salvato anche un "ID buffer" che dice quale triangolo occupa ogni pixel. Gemini restituisce le maschere delle parti, che vengono riportate sui triangoli, unite tra le viste e infine "agganciate" al bordo geometrico più vicino (l'AI decide *cosa* è una parte, la geometria decide *dove* passa il bordo).
+### Collegare Ollama
+1. Installa Ollama e scarica un modello con visione:
+   ```bash
+   ollama pull qwen2.5vl:7b
+   ```
+2. Permetti al sito di usarlo impostando la variabile `OLLAMA_ORIGINS` con l'indirizzo del sito (es. `https://donatotaucci.github.io`). Su Windows, nel Prompt dei comandi:
+   ```bash
+   setx OLLAMA_ORIGINS "https://donatotaucci.github.io"
+   ```
+   poi chiudi Ollama dall'icona vicino all'orologio e riaprilo.
+3. In *Impostazioni* scegli **Ollama**, premi **↻ Elenco**, scegli il modello, **Prova connessione** e **Salva**. Se il browser chiede di consentire l'accesso alla rete locale, accetta.
+
+### Collegare LM Studio
+1. Scarica e carica un modello con visione.
+2. Scheda **Developer** → avvia il server (porta 1234) e attiva **Enable CORS**.
+3. In *Impostazioni* scegli **LM Studio**, premi **↻ Elenco**, scegli il modello, **Prova connessione** e **Salva**.
+
+Con i modelli locali i bordi delle parti sono quelli geometrici: se una zona numerata è troppo grande, dividila prima con ✂. Senza scheda video ogni vista può richiedere da qualche secondo a un minuto.
 
 ## Sviluppo
 
@@ -100,7 +121,9 @@ src/
     repair.js        riparazione mesh
     demo.js          modello di esempio procedurale
   io/                importazione (3MF veloce, STEP via OpenCascade) ed esportazione
-  ai/gemini.js       viste, prompt e proiezione delle maschere
+  ai/gemini.js       viste, prompt e proiezione delle maschere (Gemini)
+  ai/providers.js    Gemini, Ollama, LM Studio, server compatibili OpenAI
+  ai/marks.js        zone numerate per i modelli locali
 tests/               test automatici (node:test)
 ```
 

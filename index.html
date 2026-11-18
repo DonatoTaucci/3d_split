@@ -46,7 +46,7 @@
           <label class="check"><input id="chk-showseg" type="checkbox" checked /> Colori</label>
         </div>
         <div class="ai-box">
-          <div class="ai-title">✨ Con intelligenza artificiale (Gemini)</div>
+          <div class="ai-title">✨ Con intelligenza artificiale <small id="ai-provider"></small></div>
           <button id="btn-ai-analyze" disabled>Riconosci e nomina le parti</button>
           <div class="ai-query">
             <input id="ai-query" type="text" placeholder="es. capelli, braccio destro…" disabled />
@@ -193,19 +193,45 @@
   <dialog id="dlg-settings">
     <form method="dialog">
       <h3>Impostazioni</h3>
-      <label>Chiave API Gemini
-        <input id="set-key" type="password" autocomplete="off" placeholder="AIza…" />
+      <label>Intelligenza artificiale
+        <select id="set-provider">
+          <option value="gemini">Google Gemini (online, chiave API)</option>
+          <option value="ollama">Ollama (sul tuo computer)</option>
+          <option value="lmstudio">LM Studio (sul tuo computer)</option>
+          <option value="openai">Altro server compatibile OpenAI</option>
+        </select>
       </label>
-      <p class="hint">Facoltativa: abilita il riconoscimento semantico delle parti (es. "capelli"). La chiave resta salvata solo in questo browser e viene inviata solo a Google. Creala su <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>.</p>
-      <label>Modello Gemini
-        <input id="set-model" type="text" value="gemini-2.5-flash" />
-      </label>
-      <p class="hint">Per la segmentazione serve un modello che restituisca maschere (consigliato <code>gemini-2.5-flash</code>).</p>
+      <div id="set-gemini">
+        <label>Chiave API Gemini
+          <input id="set-key" type="password" autocomplete="off" placeholder="AIza…" />
+        </label>
+        <p class="hint">La chiave resta salvata solo in questo browser e viene inviata solo a Google. Creala su <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>.</p>
+        <label>Modello Gemini
+          <input id="set-model" type="text" value="gemini-2.5-flash" />
+        </label>
+        <p class="hint">Gemini restituisce le maschere delle parti (più preciso): consigliato <code>gemini-2.5-flash</code>.</p>
+      </div>
+      <div id="set-local" hidden>
+        <label>Indirizzo del server
+          <input id="set-url" type="text" spellcheck="false" />
+        </label>
+        <label>Modello (deve leggere le immagini)
+          <span class="model-row">
+            <input id="set-local-model" type="text" list="model-list" spellcheck="false" placeholder="es. qwen2.5vl:7b" />
+            <button id="btn-list-models" type="button" title="Leggi i modelli installati sul server">↻ Elenco</button>
+          </span>
+          <datalist id="model-list"></datalist>
+        </label>
+        <label id="row-local-key">Chiave API (facoltativa)
+          <input id="set-local-key" type="password" autocomplete="off" />
+        </label>
+        <div class="help-box" id="local-help"></div>
+      </div>
       <label>Unità del file
         <select id="set-units"><option value="1">millimetri</option><option value="10">centimetri</option><option value="1000">metri</option><option value="25.4">pollici</option></select>
       </label>
       <div class="dlg-actions">
-        <button id="btn-test-key" type="button">Prova chiave</button>
+        <button id="btn-test-key" type="button">Prova connessione</button>
         <span class="spacer"></span>
         <button value="cancel">Annulla</button>
         <button id="btn-save-settings" value="save" class="primary">Salva</button>
