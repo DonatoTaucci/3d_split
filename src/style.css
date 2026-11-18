@@ -132,6 +132,8 @@ code { background: var(--bg); padding: 1px 4px; border-radius: 4px; }
 .cand-chips button { padding: 3px 8px; font-size: 12px; font-variant-numeric: tabular-nums; border-radius: 999px; }
 .smart-nav .hint { margin: 6px 0 0; font-size: 11px; }
 .sel-info { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
+.auto-note { margin: 2px 0 8px; padding: 6px 8px; border-radius: 6px; background: rgba(255, 138, 31, 0.1); border-left: 3px solid var(--accent); font-size: 12px; color: var(--text); }
+#conn-params.auto input[type='number']:not(#conn-tol):not(#conn-angle) { color: var(--accent-2); }
 
 .seg-toggle { display: grid; grid-template-columns: 1fr 1fr; gap: 0; margin-bottom: 8px; }
 .seg-toggle button { border-radius: 0; }
@@ -216,3 +218,15 @@ dialog label { display: flex; flex-direction: column; gap: 4px; color: var(--mut
   .view-toolbar button { padding: 3px 6px; font-size: 11px; }
   .toasts { bottom: 40px; }
 }
+
+.btn-grid .span2 { grid-column: 1 / -1; }
+.focus-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; color: var(--muted); font-size: 12px; }
+.focus-row .seg-toggle { flex: 1; margin: 0; }
+.focus-row .seg-toggle button { padding: 4px 4px; font-size: 11px; }
+.seg-tools { margin-top: 10px; }
+.seg-tools .hint { margin: 0 0 6px; }
+.seg-tools button { width: 100%; }
+.seg-list li { gap: 6px; }
+.seg-list input[type='checkbox'] { margin: 0; flex: none; }
+.seg-list .icon-btn { padding: 1px 6px; background: transparent; border-color: transparent; font-size: 12px; }
+.seg-list .icon-btn:hover { border-color: var(--line); }

@@ -12,10 +12,14 @@ Tutto gira **nel browser**: i file non vengono caricati su nessun server.
 | **Formati in ingresso** | STL, 3MF, OBJ, PLY, GLB/GLTF, OFF, STEP/STP, IGES/IGS, BREP |
 | **Riconoscimento automatico** | *Riconosci parti* divide il modello lungo pieghe concave e strozzature (testa, braccia, mani, ciocche, basamento…) |
 | **Selezione con un clic** | 🎯 *Parte*: clicchi un punto e viene proposta la parte che lo contiene; i chip "Possibili parti" mostrano le alternative (più piccola / più grande) |
-| **Altri strumenti** | 🧩 Segmento, ▱ Superficie (fino agli spigoli), 🖌 Pennello (aggiungi / Alt per togliere), ⬢ Corpo separato, Espandi/Riduci/Inverti |
+| **Più segmenti insieme** | In 🧩 *Segmento* ogni clic aggiunge un colore e un secondo clic lo toglie; nell'elenco puoi spuntare più segmenti e unirli (*Unisci spuntati*) |
+| **Ridividi una zona** | ✂ accanto a un segmento, o *Ridividi solo la zona selezionata*: riconosce di nuovo le parti solo lì, con più dettaglio, senza toccare il resto (si annulla con Ctrl+Z) |
+| **Vedere cosa si stacca** | *Mostra: Tutto / Attenua resto / Solo selezione* evidenzia esattamente la porzione che verrà esportata |
+| **Altri strumenti** | ▱ Superficie (fino agli spigoli), 🖌 Pennello (aggiungi / Alt per togliere), ⬢ Corpo separato, Nuova/Aggiungi/Togli, Espandi/Riduci/Inverti |
 | **AI (facoltativa)** | Con una chiave Gemini: *Riconosci e nomina le parti* (es. "capelli", "braccio destro") oppure scrivi cosa selezionare |
 | **Taglio** | *Bordo naturale*: la giunzione segue esattamente il contorno della parte (superficie di chiusura curva). *Piano*: taglio piatto, regolabile con frecce/rotazione, stampabile senza supporti |
-| **Connettori** | Perno tondo, perno quadrato (anti-rotazione), sedi per magneti, coda di rondine scorrevole (solo piano); diametro, lunghezza, tolleranza, quantità e lato del perno impostabili, con anteprima |
+| **Connettori** | Perno tondo, perno quadrato (anti-rotazione), sedi per magneti, coda di rondine scorrevole (solo piano), con anteprima |
+| **Misure automatiche** | Per ogni taglio calcola diametro, lunghezza e numero di connettori dalla forma della sezione e dallo spessore reale dei due pezzi (il foro non buca mai l'altro lato); per i magneti sceglie una misura standard (3×1 … 15×3 mm). Modificando a mano un valore si passa alle misure manuali |
 | **Riparazione** | Chiude i buchi, rimuove i triangoli non-manifold, riorienta le normali |
 | **Esportazione** | 3MF con tutte le parti (oggetti separati in Bambu Studio / PrusaSlicer / Cura), STL o OBJ in ZIP, STL singolo |
 
@@ -26,7 +30,10 @@ Ogni taglio produce pezzi **chiusi (watertight)**; i connettori sono calcolati c
 1. **Apri modello…** (o trascinalo nella finestra). Se il modello è alto pochi mm probabilmente è in un'altra unità: imposta l'altezza reale nel pannello *Modello* e premi *Scala*.
 2. Se il pannello *Modello* dice che la mesh non è chiusa, premi **Ripara mesh** (serve per i connettori e il taglio a piano).
 3. Clicca sulla parte da staccare. Se la proposta non è giusta, scegli un'altra dimensione tra i chip *Possibili parti* (passandoci sopra vedi l'anteprima), oppure correggi con Shift+clic (aggiungi), Alt+clic (togli) o il pennello.
-4. Scegli **Bordo naturale** o **Piano**, il connettore e le misure. Le sagome arancioni mostrano dove verrà messo il connettore; se la sezione è troppo sottile il programma suggerisce la misura massima.
+   - Se la parte è fatta di più colori (es. un busto con veste, maniche e ciocche), premi *Riconosci parti*, passa a 🧩 *Segmento* e clicca i colori uno per uno.
+   - Se un colore è troppo grande, premi ✂ accanto al segmento: solo quella zona viene ridivisa.
+   - Con *Mostra → Solo selezione* vedi esattamente il pezzo che verrà staccato.
+4. Scegli **Bordo naturale** o **Piano** e il connettore. Con *Misure automatiche* attivo, il riquadro arancione indica cosa è stato scelto (es. "2 perni Ø 3 mm, lunghezza 5 mm") e le sagome arancioni dove verranno messi.
 5. **✂ Separa parte**. Puoi continuare a dividere qualsiasi pezzo, usare *Esplodi* per vederli separati, e infine **Esporta**.
 
 Scorciatoie: `S` parte · `G` segmento · `U` superficie · `B` pennello · `C` corpo · `I` inverti · `+`/`-` espandi/riduci · `[`/`]` raggio pennello · `F` inquadra · `Esc` deseleziona · `Ctrl+Z`/`Ctrl+Y` annulla/ripeti.

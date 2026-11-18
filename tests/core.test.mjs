@@ -118,3 +118,60 @@ test('3MF export round-trips through the fast parser', () => {
   const w = weld(parsed[0].positions, parsed[0].indices);
   assert.equal(new MeshData(w.pos, w.tri).isClosed(), true);
 });
+
+// ---------------------------------------------------------------------------
+// automatic connector sizing & region re-segmentation
+// ---------------------------------------------------------------------------
+import { availableDepths, autoConnectorSpec } from '../src/core/autoconnect.js';
+import { segmentRegion } from '../src/core/region.js';
+import { planConnectors, disposePlan } from '../src/core/cutter.js';
+
+test('available depth is measured exactly through the solid', () => {
+  // neck plane at z=46: the head goes up to ~95 mm, the bust bottom is at z=4
+  const d = availableDepths(mesh, [0, 2, 46], [0, 0, -1], 2);
+  assert.ok(d.A > 50 && d.A < 56, `towards top of the hair ${d.A}`);
+  assert.ok(d.B > 40 && d.B < 43, `towards base ${d.B}`);
+});
+
+test('auto sizing picks a peg that fits the neck and the hole depth', () => {
+  const sel = new Uint8Array(mesh.nf);
+  for (let f = 0; f < mesh.nf; f++) if (mesh.faceCenter[3 * f + 2] > 46) sel[f] = 1;
+  cleanFaceMask(mesh, sel);
+  const part = { mesh };
+  const spec = { type: 'peg-round', auto: true, diameter: 5, length: 6, tolerance: 0.2, count: 1, maleOn: 'A', angle: 15 };
+  const plan = planConnectors({ part, sel, method: 'plane', plane: { normal: [0, 0, 1], origin: [0, 0, 46] }, spec, onlySelected: true, preview: true });
+  disposePlan(plan);
+  part._manifold?.man.delete();
+  assert.ok(plan.spec, plan.warning || 'no spec');
+  const W = 2 * plan.maxDepth;
+  assert.ok(plan.spec.diameter >= 2 && plan.spec.diameter <= W / 2, `diameter ${plan.spec.diameter} in section ${W}`);
+  assert.ok(plan.spec.length >= 3 && plan.spec.length <= 12);
+  assert.equal(plan.placements.length, plan.spec.count);
+});
+
+test('auto sizing refuses connectors in a too thin section', () => {
+  const stats = { area: 6, maxDepth: 1.2, elong: 1, deepest: [0, 0] };
+  const r = autoConnectorSpec({ type: 'peg-round', tolerance: 0.2, maleOn: 'A' }, stats, { A: 20, B: 20 }, null);
+  assert.ok(r.unfit);
+});
+
+test('magnets are chosen among standard sizes', () => {
+  const sel = new Uint8Array(mesh.nf);
+  for (let f = 0; f < mesh.nf; f++) if (mesh.faceCenter[3 * f + 2] > 46) sel[f] = 1;
+  cleanFaceMask(mesh, sel);
+  const part = { mesh };
+  const spec = { type: 'magnet', auto: true, diameter: 6, length: 3, tolerance: 0.2, count: 1, maleOn: 'A' };
+  const plan = planConnectors({ part, sel, method: 'membrane', plane: null, spec, preview: true });
+  assert.ok(plan.spec, plan.warning);
+  assert.ok([3, 4, 5, 6, 8, 10, 12, 15].includes(plan.spec.diameter));
+});
+
+test('re-segmenting one region splits it without touching the rest', () => {
+  // region = head + hair + neck: should split into at least hair and the rest
+  const region = new Uint8Array(mesh.nf);
+  for (let f = 0; f < mesh.nf; f++) if (mesh.faceCenter[3 * f + 2] > 40) region[f] = 1;
+  const r = segmentRegion(mesh, region, { threshold: 1.2, minFraction: 0.03 });
+  assert.ok(r.count >= 2, `count ${r.count}`);
+  assert.equal(r.faces.length, region.reduce((a, b) => a + b, 0));
+  for (const f of r.faces) assert.equal(region[f], 1);
+});

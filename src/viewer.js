@@ -83,6 +83,7 @@ export class Viewer {
       uSelColor: { value: new THREE.Color(0xff8a1f) },
       uHoverColor: { value: new THREE.Color(0x4fc3ff) },
       uAltColor: { value: new THREE.Color(0xff4d6d) },
+      uFocus: { value: 0 }, // 0 all, 1 dim unselected, 2 hide unselected
     };
     this.transform = new TransformControls(this.camera, this.renderer.domElement);
     this.transform.addEventListener('dragging-changed', (e) => { this.controls.enabled = !e.value; });
@@ -161,6 +162,7 @@ uniform float uShowSeg;
 uniform vec3 uSelColor;
 uniform vec3 uHoverColor;
 uniform vec3 uAltColor;
+uniform float uFocus;
 varying float vSeg;
 varying float vSel;`)
         .replace('#include <color_fragment>', `#include <color_fragment>
@@ -176,6 +178,10 @@ varying float vSel;`)
   if (mod(s, 2.0) > 0.5) base = mix(base, uSelColor, 0.8);
   else if (mod(floor(s / 2.0), 2.0) > 0.5) base = mix(base, uHoverColor, 0.5);
   if (mod(floor(s / 4.0), 2.0) > 0.5) base = mix(base, uAltColor, 0.6);
+  if (uFocus > 0.5 && mod(s, 2.0) < 0.5) {
+    if (uFocus > 1.5) discard;
+    base = mix(base, vec3(0.16, 0.17, 0.2), 0.8);
+  }
   diffuseColor.rgb = base;
 }`);
     };

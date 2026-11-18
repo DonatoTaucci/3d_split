@@ -54,6 +54,10 @@
           </div>
           <p id="ai-status" class="hint"></p>
         </div>
+        <div class="seg-tools" id="seg-tools" hidden>
+          <p class="hint">Spunta più segmenti per staccarli insieme. ✂ ridivide un segmento troppo grande.</p>
+          <button id="btn-seg-merge" title="Unisce in un unico segmento quelli spuntati">⧉ Unisci spuntati</button>
+        </div>
         <ul id="seg-list" class="seg-list"></ul>
       </section>
 
@@ -123,8 +127,17 @@
           <button id="btn-shrink" title="Riduci di un anello (−)">－ Riduci</button>
           <button id="btn-invert" title="Inverti (I)">⇄ Inverti</button>
           <button id="btn-clear" title="Deseleziona (Esc)">✕ Nessuna</button>
+          <button id="btn-resegment" class="span2" title="Riconosce di nuovo le parti solo dentro la zona selezionata, con più dettaglio, senza toccare il resto del modello">🔍 Ridividi solo la zona selezionata</button>
         </div>
         <p class="sel-info" id="sel-info">Nessuna selezione</p>
+        <div class="focus-row">
+          <span>Mostra</span>
+          <div class="seg-toggle three" id="focus-toggle" title="Per vedere esattamente cosa verrà staccato">
+            <button data-focus="0" class="active">Tutto</button>
+            <button data-focus="1">Attenua resto</button>
+            <button data-focus="2">Solo selezione</button>
+          </div>
+        </div>
       </section>
 
       <section id="sec-split">
@@ -151,6 +164,8 @@
             <option value="dovetail">Coda di rondine (solo piano)</option>
           </select>
         </label>
+        <label class="check" id="row-auto" title="Diametro, lunghezza e numero vengono scelti in base alla sezione del taglio e allo spessore dei due pezzi"><input id="chk-auto" type="checkbox" checked /> Misure automatiche per ogni taglio</label>
+        <p class="auto-note" id="conn-auto" hidden></p>
         <div id="conn-params">
           <label class="row"><span id="lbl-diam">Diametro</span> <input id="conn-diam" type="number" min="0.5" step="0.5" value="5" /> mm</label>
           <label class="row"><span id="lbl-len">Lunghezza</span> <input id="conn-len" type="number" min="0.5" step="0.5" value="6" /> mm</label>

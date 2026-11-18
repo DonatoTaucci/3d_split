@@ -42,14 +42,14 @@ self.onmessage = async (e) => {
       case 'plan': {
         const p = getPart(data.partId);
         const plan = planConnectors({ part: p, sel: data.sel, method: data.method, plane: data.plane, spec: data.spec, onlySelected: data.onlySelected, preview: true });
-        result = { outline: plan.outline, placements: slimPlacements(plan.placements), warning: plan.warning, maxDepth: plan.maxDepth ?? null };
+        result = { outline: plan.outline, placements: slimPlacements(plan.placements), warning: plan.warning, note: plan.note || null, spec: plan.spec || null, maxDepth: plan.maxDepth ?? null };
         disposePlan(plan);
         break;
       }
       case 'cut': {
         const p = getPart(data.partId);
         const res = performCut({ part: p, sel: data.sel, method: data.method, plane: data.plane, spec: data.spec, onlySelected: data.onlySelected });
-        result = { A: res.A, B: res.B, warnings: res.warnings };
+        result = { A: res.A, B: res.B, warnings: res.warnings, spec: res.spec || null, note: res.note || null };
         transfer.push(res.A.pos.buffer, res.A.tri.buffer, res.B.pos.buffer, res.B.tri.buffer);
         break;
       }

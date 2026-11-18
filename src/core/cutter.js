@@ -1,6 +1,7 @@
 // High-level cut pipeline used by the UI: plane fitting, previews and final split.
 import { boundaryLoops, loopFrame, computeCaps, splitByMask } from './split.js';
 import * as csg from './csg.js';
+import { autoConnectorSpec, availableDepths, describeSpec } from './autoconnect.js';
 
 const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 
@@ -55,7 +56,10 @@ function footprintFromSection(sec, depth) {
   const w = csg.getW();
   const { u, v, n } = sec.basis;
   const o = sec.origin;
-  const ext = w.Manifold.extrude(sec.cs, depth * 2, 0, 0, [1, 1], true);
+  // inset slightly so the tongue never shares surface with the outside of the model
+  const inner = sec.cs.offset(-0.3, 'Round');
+  const ext = w.Manifold.extrude(inner.isEmpty() ? sec.cs : inner, depth * 2, 0, 0, [1, 1], true);
+  inner.delete();
   const T = [u[0], u[1], u[2], 0, v[0], v[1], v[2], 0, n[0], n[1], n[2], 0, o[0], o[1], o[2], 1];
   const fw = ext.transform(T);
   ext.delete();
@@ -86,6 +90,40 @@ function outlineFromSection(sec, res) {
   for (const p of polys) {
     res.outline.push(p.map((q) => [o[0] + u[0] * q[0] + v[0] * q[1], o[1] + u[1] * q[0] + v[1] * q[1], o[2] + u[2] * q[0] + v[2] * q[1]]));
   }
+}
+
+/**
+ * Decide the connector spec for a section: automatic sizing (spec.auto) or the user's
+ * values, with a warning when a manual hole would go through the other piece.
+ * @param toWorld (x,y) -> 3D point on the cut surface; axis: unit vector from A into B
+ * @returns spec to use, or null (res.warning explains why)
+ */
+function resolveSpec(ctx, res, cs, toWorld, axis) {
+  const spec = ctx.spec;
+  const mesh = ctx.part.mesh;
+  const stats = csg.sectionStats(cs);
+  res.maxDepth = stats.maxDepth;
+  if (stats.maxDepth <= 0) { res.warning = 'Sezione di taglio vuota.'; return null; }
+  const p3 = toWorld(stats.deepest[0], stats.deepest[1]);
+  const radius = Math.max(stats.maxDepth * 0.35, mesh.avgEdgeLen * 2, spec.auto ? 0 : spec.diameter / 2 + spec.tolerance);
+  const depths = availableDepths(mesh, p3, axis, radius);
+  res.depths = depths;
+  if (!spec.auto) {
+    const tol = spec.tolerance;
+    if (spec.type === 'magnet') {
+      const both = Math.min(depths.A, depths.B);
+      if (spec.length + tol + 0.4 > both) res.note = `Attenzione: la sede del magnete (${(spec.length + tol).toFixed(1)} mm) è più profonda dello spessore disponibile (${both.toFixed(1)} mm).`;
+    } else if (spec.type !== 'none') {
+      const female = spec.maleOn === 'B' ? depths.A : depths.B;
+      if (spec.length + tol + 0.4 > female) res.note = `Attenzione: il foro (${(spec.length + tol).toFixed(1)} mm) rischia di bucare il pezzo, spesso solo ${female.toFixed(1)} mm in quel punto.`;
+    }
+    return spec;
+  }
+  const r = autoConnectorSpec(spec, stats, depths, cs);
+  if (r.unfit) { res.warning = r.unfit; return null; }
+  res.spec = r.spec;
+  res.note = [describeSpec(r.spec), r.note].filter(Boolean).join(' · ');
+  return r.spec;
 }
 
 function placeOnSection(sec, spec, res) {
@@ -140,9 +178,18 @@ function planePreview(ctx, res) {
     }
   }
   outlineFromSection(sec, res);
-  if (spec && spec.type !== 'none') placeOnSection(sec, spec, res);
+  if (spec && spec.type !== 'none') {
+    const use = resolveSpec(ctx, res, sec.cs, planeToWorld(sec), planeAxis(sec));
+    if (use) placeOnSection(sec, use, res);
+  }
   return res;
 }
+
+const planeToWorld = (sec) => (x, y) => {
+  const { u, v } = sec.basis, o = sec.origin;
+  return [o[0] + u[0] * x + v[0] * y, o[1] + u[1] * x + v[1] * y, o[2] + u[2] * x + v[2] * y];
+};
+const planeAxis = (sec) => [-sec.basis.n[0], -sec.basis.n[1], -sec.basis.n[2]]; // A (+n side) -> B
 
 /**
  * Compute connector placements (for preview and for the final cut).
@@ -165,15 +212,23 @@ export function planConnectors(ctx) {
     if (!spec || spec.type === 'none') return res;
     if (spec.type === 'dovetail') { res.warning = 'La coda di rondine richiede il taglio a piano.'; return res; }
     // several cut loops (e.g. hair touching the body): use the one with the most room
-    let best = null;
+    let bestCap = null, bestDepth = -1;
     for (const cap of caps.slice(0, 8)) {
       if (cap.loopPositions.length < 9) continue;
-      const mp = csg.membranePlacements(cap, spec);
-      if (!best || mp.placements.length > best.placements.length || (mp.placements.length === best.placements.length && mp.maxDepth > best.maxDepth)) best = mp;
+      const sec = csg.capSection(cap);
+      const st = csg.sectionStats(sec.cs);
+      sec.cs.delete();
+      if (st.maxDepth > bestDepth) { bestDepth = st.maxDepth; bestCap = cap; }
     }
-    res.placements = best ? best.placements : [];
-    res.maxDepth = best ? best.maxDepth : 0;
-    if (!res.placements.length) res.warning = tooSmall(spec, res.maxDepth);
+    if (!bestCap) { res.warning = 'Sezione di taglio troppo piccola.'; return res; }
+    const sec = csg.capSection(bestCap);
+    const use = resolveSpec(ctx, res, sec.cs, sec.lift, sec.basis.n);
+    sec.cs.delete();
+    if (!use) return res;
+    const mp = csg.membranePlacements(bestCap, use);
+    res.placements = mp.placements;
+    res.maxDepth = mp.maxDepth;
+    if (!res.placements.length) res.warning = tooSmall(use, res.maxDepth);
     return res;
   }
   if (ctx.preview) return planePreview(ctx, res);
@@ -190,7 +245,8 @@ export function planConnectors(ctx) {
   res.section = sec;
   outlineFromSection(sec, res);
   if (!spec || spec.type === 'none') return res;
-  placeOnSection(sec, spec, res);
+  const use = resolveSpec(ctx, res, sec.cs, planeToWorld(sec), planeAxis(sec));
+  if (use) placeOnSection(sec, use, res);
   return res;
 }
 
@@ -228,9 +284,10 @@ export function performCut(ctx) {
       warnings.push(e.message + ' Pezzi separati senza connettori.');
       return { A: pieces.A, B: pieces.B, warnings };
     }
-    const solids = csg.buildConnectorSolids(spec, plan.placements);
+    const used = plan.spec || spec;
+    const solids = csg.buildConnectorSolids(used, plan.placements);
     const out = csg.applyConnectors(A, B, solids);
-    const r = { A: csg.fromManifold(out.A), B: csg.fromManifold(out.B), warnings, placements: plan.placements };
+    const r = { A: csg.fromManifold(out.A), B: csg.fromManifold(out.B), warnings, placements: plan.placements, spec: used, note: plan.note };
     out.A.delete(); out.B.delete();
     return r;
   }
@@ -241,18 +298,19 @@ export function performCut(ctx) {
     if (plan.warning) warnings.push(plan.warning);
     let { A, B } = plan.planeSplit;
     plan.planeSplit = null;
+    const used = plan.spec || spec;
     if (useConn && plan.placements.length) {
       const extra = { span: plan.span };
-      const solids = csg.buildConnectorSolids(spec, plan.placements, extra);
+      const solids = csg.buildConnectorSolids(used, plan.placements, extra);
       if (solids.dovetails.length) {
-        const fp = footprintFromSection(plan.section, spec.length + 2);
+        const fp = footprintFromSection(plan.section, used.length + 2);
         for (const dv of solids.dovetails) { const t = dv.tongue.intersect(fp); dv.tongue.delete(); dv.tongue = t; }
         fp.delete();
       }
       const out = csg.applyConnectors(A, B, solids, { whole: originalManifold(part).man });
       A = out.A; B = out.B;
     }
-    const r = { A: csg.fromManifold(A), B: csg.fromManifold(B), warnings, placements: plan.placements };
+    const r = { A: csg.fromManifold(A), B: csg.fromManifold(B), warnings, placements: plan.placements, spec: useConn && plan.placements.length ? used : null, note: plan.note };
     A.delete(); B.delete();
     return r;
   } finally {

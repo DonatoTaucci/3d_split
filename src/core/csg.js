@@ -306,7 +306,45 @@ export function placeConnectors(cs, count, clearance) {
       return b;
     });
   }
-  return { points: centers.map((c) => [c[0], c[1]]), maxDepth, polys };
+  let minDist = Infinity;
+  for (let i = 0; i < centers.length; i++) for (let j = i + 1; j < centers.length; j++) {
+    minDist = Math.min(minDist, Math.hypot(centers[i][0] - centers[j][0], centers[i][1] - centers[j][1]));
+  }
+  return { points: centers.map((c) => [c[0], c[1]]), maxDepth, polys, minDist };
+}
+
+/**
+ * Shape statistics of a 2D section: area, inscribed radius (maxDepth), deepest point and
+ * elongation (ratio of principal axes from exact area moments).
+ */
+export function sectionStats(cs) {
+  const pc = placeConnectors(cs, 1, 0);
+  let A = 0, Sx = 0, Sy = 0, Mxx = 0, Myy = 0, Mxy = 0;
+  for (const poly of pc.polys) {
+    const m = poly.length;
+    for (let i = 0; i < m; i++) {
+      const [x0, y0] = poly[i], [x1, y1] = poly[(i + 1) % m];
+      const c = x0 * y1 - x1 * y0;
+      A += c / 2;
+      Sx += ((x0 + x1) * c) / 6;
+      Sy += ((y0 + y1) * c) / 6;
+      Mxx += ((x0 * x0 + x0 * x1 + x1 * x1) * c) / 12;
+      Myy += ((y0 * y0 + y0 * y1 + y1 * y1) * c) / 12;
+      Mxy += ((x0 * y1 + 2 * x0 * y0 + 2 * x1 * y1 + x1 * y0) * c) / 24;
+    }
+  }
+  let elong = 1, axis = [1, 0];
+  if (Math.abs(A) > 1e-12) {
+    const cx = Sx / A, cy = Sy / A;
+    const a = Mxx / A - cx * cx, b = Mxy / A - cx * cy, d = Myy / A - cy * cy;
+    const tr = a + d, det = a * d - b * b;
+    const disc = Math.sqrt(Math.max(0, (tr * tr) / 4 - det));
+    const l1 = tr / 2 + disc, l2 = Math.max(1e-12, tr / 2 - disc);
+    elong = Math.sqrt(Math.max(1, l1 / l2));
+    const ang = 0.5 * Math.atan2(2 * b, a - d);
+    axis = [Math.cos(ang), Math.sin(ang)];
+  }
+  return { area: Math.abs(A), maxDepth: pc.maxDepth, deepest: pc.points[0] || [0, 0], elong, axis, polys: pc.polys };
 }
 
 /** principal direction of a section (for dovetail sliding direction) */
@@ -455,7 +493,8 @@ export function planarPlacements(points2D, basis, origin, slide2D = null) {
  * Placements on a curved membrane cap: project the loop to its fit plane, choose
  * points in 2D, then lift them onto the cap surface along the cap normal.
  */
-export function membranePlacements(cap, spec) {
+/** Project a membrane cap to its fit plane: 2D section + helpers to lift points back onto the cap. */
+export function capSection(cap) {
   const w = getW();
   const N = norm(cap.normal); // A -> B
   const { u, v } = planeBasis(N);
@@ -468,13 +507,7 @@ export function membranePlacements(cap, spec) {
     loop2D.push([dot(d, u), dot(d, v)]);
   }
   const cs = new w.CrossSection([loop2D], 'NonZero');
-  const clearance = connectorClearance(spec);
-  const res = placeConnectors(cs, spec.count, clearance);
-  let slide2D = null;
-  if (spec.type === 'dovetail') slide2D = sectionPrincipalAxis(res.polys);
-  cs.delete();
   const heightAt = (x, y) => {
-    // ray along N through plane point (x,y): intersect cap triangles
     const o = add(add(C, u, x), v, y);
     let best = null;
     const T = cap.capTris, Q = cap.capPositions;
@@ -484,7 +517,23 @@ export function membranePlacements(cap, spec) {
     }
     return best ?? 0;
   };
-  const r = (spec.type === 'dovetail' ? spec.diameter / 2 : spec.diameter / 2) + spec.tolerance;
+  const lift = (x, y) => add(add(add(C, u, x), v, y), N, heightAt(x, y));
+  return { cs, basis: { u, v, n: N }, origin: C, heightAt, lift };
+}
+
+export function membranePlacements(cap, spec) {
+  const sec = capSection(cap);
+  const { cs } = sec;
+  const { u, v } = sec.basis;
+  const N = sec.basis.n;
+  const C = sec.origin;
+  const clearance = connectorClearance(spec);
+  const res = placeConnectors(cs, spec.count, clearance);
+  let slide2D = null;
+  if (spec.type === 'dovetail') slide2D = sectionPrincipalAxis(res.polys);
+  cs.delete();
+  const heightAt = sec.heightAt;
+  const r = spec.diameter / 2 + spec.tolerance;
   const placements = res.points.map((p) => {
     const h0 = heightAt(p[0], p[1]);
     let hmin = 0, hmax = 0;
@@ -499,7 +548,7 @@ export function membranePlacements(cap, spec) {
     if (slide2D) pl.slide = norm(add([u[0] * slide2D[0], u[1] * slide2D[0], u[2] * slide2D[0]], v, slide2D[1]));
     return pl;
   });
-  return { placements, maxDepth: res.maxDepth, polys: res.polys, basis: { u, v, n: N }, origin: C };
+  return { placements, maxDepth: res.maxDepth, polys: res.polys, basis: { u, v, n: N }, origin: C, minDist: res.minDist };
 }
 
 function rayTri(o, d, Q, i0, i1, i2) {

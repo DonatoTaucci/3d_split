@@ -10,6 +10,7 @@ import {
   growMask, shrinkMask, cleanFaceMask, maskBoundaryEdges,
 } from './core/segment.js';
 import { repairMesh } from './core/repair.js';
+import { segmentRegion } from './core/region.js';
 import { fitPlaneToSelection, selectionCentroid } from './core/cutter.js';
 import { GeoClient } from './geoClient.js';
 import * as AI from './ai/gemini.js';
@@ -38,6 +39,7 @@ const state = {
   plane: null, // {object, baseOrigin, normal}
   previewTimer: 0,
   previewSeq: 0,
+  focus: 0,
   selName: null,
   wire: false,
 };
@@ -283,6 +285,7 @@ function setSelection(part, mask, record = true, name = null) {
   refreshSelectionDisplay(part);
   if (state.method === 'plane' && mask.some((v) => v)) fitPlane();
   updateSelInfo();
+  if (part.segFace) renderSegList();
   schedulePreview();
 }
 
@@ -328,6 +331,9 @@ function applyHistory(e, isUndo) {
     for (const p of to) { if (!p.object) addPart(p); else state.parts.push(p); }
     state.active = isUndo ? e.activeBefore : e.activeAfter;
     applyExplode();
+  } else if (e.type === 'seg') {
+    restoreSeg(e.part, isUndo ? e.before : e.after);
+    if (state.parts.includes(e.part)) refreshSegDisplay(e.part);
   }
   refreshAll();
 }
@@ -373,6 +379,7 @@ function selectedStats(part) {
 }
 
 function updateSelInfo() {
+  applyFocus();
   const p = state.active;
   if (!p) { $('sel-info').textContent = 'Nessuna selezione'; $('btn-split').disabled = true; return; }
   const { n, area } = selectedStats(p);
@@ -479,9 +486,7 @@ async function onClick(e) {
       if (!part.segFace) { await runAutoSegment(part); }
       const lab = part.segFace[hit.face];
       if (lab < 0) return;
-      const m = new Uint8Array(mesh.nf);
-      for (let f = 0; f < mesh.nf; f++) if (part.segFace[f] === lab) m[f] = 1;
-      setSelection(part, combine(part.sel, m, mod), true, part.segNames?.[lab] || null);
+      toggleSegment(part, lab, mod);
       break;
     }
     case 'surface': {
@@ -650,7 +655,7 @@ function updateBrushCursor(hit) {
 // ---------------------------------------------------------------------------
 const MODE_HELP = {
   smart: 'Clicca su una parte: viene riconosciuta e selezionata. Se non è quella giusta scegline un\'altra tra le «Possibili parti». Shift+clic aggiunge, Alt+clic toglie.',
-  segment: 'Clicca su un segmento riconosciuto automaticamente (o dall\'AI). Shift+clic per aggiungerne altri.',
+  segment: 'Clicca i segmenti colorati da staccare insieme: un clic aggiunge, un altro clic toglie. Se un segmento è troppo grande usa ✂ nell\'elenco a sinistra.',
   surface: 'Seleziona una superficie liscia fino agli spigoli più netti dell\'angolo scelto.',
   brush: 'Dipingi con il tasto sinistro per aggiungere alla selezione (con «Togli» o Alt per cancellare). Ruota la vista con il tasto destro.',
   component: 'Seleziona un intero corpo separato (non collegato al resto).',
@@ -705,34 +710,174 @@ $('btn-autoseg').onclick = async () => {
 $('seg-detail').onchange = () => { if (state.active?.segFace && !state.active.segNames) runAutoSegment(state.active); };
 $('chk-showseg').onchange = () => { viewer.uniforms.uShowSeg.value = $('chk-showseg').checked ? 1 : 0; viewer.requestRender(); };
 
+function segmentMask(part, lab) {
+  const m = new Uint8Array(part.mesh.nf);
+  for (let f = 0; f < m.length; f++) if (part.segFace[f] === lab) m[f] = 1;
+  return m;
+}
+
+/** fraction of each segment currently selected */
+function segmentCoverage(part) {
+  const tot = new Float64Array(part.segCount), sel = new Float64Array(part.segCount);
+  for (let f = 0; f < part.mesh.nf; f++) {
+    const l = part.segFace[f];
+    if (l < 0) continue;
+    const a = part.mesh.faceArea[f];
+    tot[l] += a;
+    if (part.sel[f]) sel[l] += a;
+  }
+  return { tot, cov: Array.from(tot, (t, l) => (t > 0 ? sel[l] / t : 0)) };
+}
+
+/** click on a segment: adds it, or removes it when it is already selected (Shift = add, Alt = remove) */
+function toggleSegment(part, lab, mod) {
+  const m = segmentMask(part, lab);
+  let op = mod;
+  if (op === 'replace') {
+    let tot = 0, on = 0;
+    for (let f = 0; f < m.length; f++) if (m[f]) { tot++; if (part.sel[f]) on++; }
+    op = on > tot * 0.95 ? 'sub' : 'add';
+  }
+  const out = combine(part.sel, m, op);
+  // keep the name only when the selection is exactly this one segment
+  let only = true;
+  for (let f = 0; f < out.length && only; f++) if (out[f] !== m[f]) only = false;
+  setSelection(part, out, true, only ? part.segNames?.[lab] || null : null);
+}
+
+function segLabelName(part, l) {
+  return part.segNames?.[l] || `Segmento ${l + 1}`;
+}
+
 function renderSegList() {
   const ul = $('seg-list');
   ul.innerHTML = '';
   const part = state.active;
+  $('seg-tools').hidden = !part || !part.segFace;
   if (!part || !part.segFace) return;
-  const areas = new Float64Array(part.segCount);
-  for (let f = 0; f < part.mesh.nf; f++) if (part.segFace[f] >= 0) areas[part.segFace[f]] += part.mesh.faceArea[f];
-  for (let l = 0; l < part.segCount; l++) {
-    if (!areas[l]) continue;
+  const { tot, cov } = segmentCoverage(part);
+  const order = Array.from({ length: part.segCount }, (_, l) => l).sort((a, b) => tot[b] - tot[a]);
+  let checked = 0;
+  for (const l of order) {
+    if (!tot[l] || tot[l] < part.mesh.totalArea * 2e-4) continue;
     const li = document.createElement('li');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = cov[l] > 0.95;
+    cb.indeterminate = cov[l] > 0.02 && cov[l] <= 0.95;
+    if (cb.checked) checked++;
+    cb.title = 'Aggiungi / togli dalla selezione';
+    cb.onclick = (e) => { e.stopPropagation(); toggleSegment(part, l, cov[l] > 0.95 ? 'sub' : 'add'); };
     const sw = document.createElement('span');
     sw.className = 'swatch';
     sw.style.background = `#${segmentColor(l).getHexString()}`;
     const nm = document.createElement('span');
     nm.className = 'name';
-    nm.textContent = part.segNames?.[l] || `Segmento ${l + 1}`;
+    nm.textContent = segLabelName(part, l);
     const meta = document.createElement('span');
     meta.className = 'meta';
-    meta.textContent = `${((100 * areas[l]) / part.mesh.totalArea).toFixed(1)}%`;
-    li.append(sw, nm, meta);
-    li.title = 'Clic: seleziona · Shift+clic: aggiungi';
+    const pct = (100 * tot[l]) / part.mesh.totalArea;
+    meta.textContent = `${pct < 0.1 ? '<0.1' : pct.toFixed(1)}%`;
+    const cut = document.createElement('button');
+    cut.className = 'icon-btn';
+    cut.textContent = '✂';
+    cut.title = 'Ridividi questo segmento in parti più piccole';
+    cut.onclick = (e) => { e.stopPropagation(); resegment(part, segmentMask(part, l), segLabelName(part, l)); };
+    li.append(cb, sw, nm, meta, cut);
+    li.classList.toggle('sel', cov[l] > 0.95);
+    li.title = 'Clic: seleziona solo questo · casella: aggiungi/togli';
     li.onclick = (e) => {
-      const m = new Uint8Array(part.mesh.nf);
-      for (let f = 0; f < m.length; f++) if (part.segFace[f] === l) m[f] = 1;
-      setSelection(part, combine(part.sel, m, e.shiftKey ? 'add' : 'replace'), true, part.segNames?.[l] || null);
+      if (e.shiftKey) { toggleSegment(part, l, 'add'); return; }
+      setSelection(part, segmentMask(part, l), true, part.segNames?.[l] || null);
     };
+    li.onmouseenter = () => setHover({ part, key: `segl:${l}`, mask: segmentMask(part, l) });
+    li.onmouseleave = () => setHover(null);
     ul.appendChild(li);
   }
+  $('btn-seg-merge').disabled = checked < 2;
+}
+
+function snapshotSeg(part) {
+  return { segFace: part.segFace ? part.segFace.slice() : null, segCount: part.segCount, segNames: part.segNames ? part.segNames.slice() : null };
+}
+
+function restoreSeg(part, snap) {
+  part.segFace = snap.segFace ? snap.segFace.slice() : null;
+  part.segCount = snap.segCount;
+  part.segNames = snap.segNames ? snap.segNames.slice() : null;
+}
+
+/** renumber labels 0..n-1 (dropping empty ones), keeping names */
+function compactSegments(part) {
+  const map = new Map();
+  const names = [];
+  for (let f = 0; f < part.segFace.length; f++) {
+    const l = part.segFace[f];
+    if (l < 0) continue;
+    let k = map.get(l);
+    if (k === undefined) { k = map.size; map.set(l, k); names.push(part.segNames?.[l] ?? null); }
+    part.segFace[f] = k;
+  }
+  part.segCount = map.size;
+  part.segNames = names.some((n) => n) ? names : null;
+}
+
+/** re-run part detection only inside `mask`, leaving the other segments untouched */
+async function resegment(part, mask, baseName = null) {
+  if (!mask.some((v) => v)) { toast('Seleziona prima la zona da ridividere.', 'error'); return; }
+  await busy('Nuovo riconoscimento solo nella zona…', async () => {
+    const before = snapshotSeg(part);
+    const t = parseFloat($('seg-detail').value) / 100;
+    const r = segmentRegion(part.mesh, mask, { threshold: 0.6 + 1.3 * t, minFraction: 0.08 * (1 - t) + 0.01 });
+    if (!part.segFace) { part.segFace = new Int32Array(part.mesh.nf).fill(-1); part.segCount = 0; part.segNames = null; }
+    if (part.segCount + r.count > 60000) compactSegments(part);
+    const base = part.segCount;
+    for (let i = 0; i < r.faces.length; i++) part.segFace[r.faces[i]] = base + r.labels[i];
+    if (part.segNames || baseName) {
+      const names = part.segNames ? part.segNames.slice() : [];
+      for (let k = names.length; k < base; k++) names[k] = null;
+      for (let k = 0; k < r.count; k++) names[base + k] = baseName && !/^Segmento \d+$/.test(baseName) ? `${baseName} ${k + 1}` : null;
+      part.segNames = names;
+    }
+    part.segCount = base + r.count; // existing segments keep their number and colour
+    pushUndo({ type: 'seg', part, before, after: snapshotSeg(part) });
+    refreshSegDisplay(part);
+    renderSegList();
+    setMode('segment');
+    status(`Zona ridivisa: ${r.count} nuove parti`);
+    toast(r.count > 1 ? `Zona divisa in ${r.count} parti: clicca quelle da staccare.` : 'In questa zona non ho trovato altre divisioni: prova ad alzare il Dettaglio o usa il pennello.', r.count > 1 ? 'ok' : 'error', 6000);
+  });
+}
+
+$('btn-resegment').onclick = () => { const p = state.active; if (p) resegment(p, p.sel.slice(), state.selName); };
+
+$('btn-seg-merge').onclick = () => {
+  const part = state.active;
+  if (!part || !part.segFace) return;
+  const { cov } = segmentCoverage(part);
+  const labs = cov.map((c, l) => (c > 0.95 ? l : -1)).filter((l) => l >= 0);
+  if (labs.length < 2) return;
+  const before = snapshotSeg(part);
+  const target = labs[0];
+  const set = new Set(labs);
+  for (let f = 0; f < part.segFace.length; f++) if (set.has(part.segFace[f])) part.segFace[f] = target;
+  pushUndo({ type: 'seg', part, before, after: snapshotSeg(part) });
+  refreshSegDisplay(part);
+  renderSegList();
+  toast(`${labs.length} segmenti uniti in uno.`, 'ok');
+};
+
+// focus view: show everything, dim what is not selected, or only the selection
+document.querySelectorAll('[data-focus]').forEach((b) => (b.onclick = () => {
+  state.focus = parseInt(b.dataset.focus, 10);
+  document.querySelectorAll('[data-focus]').forEach((x) => x.classList.toggle('active', x === b));
+  applyFocus();
+}));
+
+function applyFocus() {
+  const has = state.active?.sel.some((v) => v);
+  viewer.uniforms.uFocus.value = has ? state.focus || 0 : 0;
+  viewer.requestRender();
 }
 
 function requireKey() {
@@ -1019,6 +1164,8 @@ function updateConnUI() {
   }
   lastConnType = t;
   $('conn-params').hidden = t === 'none';
+  $('row-auto').hidden = t === 'none';
+  if (t === 'none') $('conn-auto').hidden = true;
   if (t !== 'none') {
     const [a, b, c] = CONN_LABELS[t];
     $('lbl-diam').textContent = a;
@@ -1038,6 +1185,29 @@ function updateConnUI() {
 
 $('conn-type').onchange = () => { updateConnUI(); schedulePreview(); };
 for (const id of ['conn-diam', 'conn-len', 'conn-tol', 'conn-count', 'conn-male', 'conn-angle']) $(id).addEventListener('input', () => schedulePreview());
+// typing a size switches to manual sizes
+for (const id of ['conn-diam', 'conn-len', 'conn-count']) {
+  $(id).addEventListener('input', (e) => {
+    if (e.isTrusted && $('chk-auto').checked) { $('chk-auto').checked = false; updateAutoUI(); }
+  });
+}
+$('chk-auto').onchange = () => { updateAutoUI(); schedulePreview(); };
+
+function updateAutoUI(note = null) {
+  const auto = $('chk-auto').checked;
+  $('conn-params').classList.toggle('auto', auto);
+  const box = $('conn-auto');
+  if (note) { box.textContent = note; box.hidden = false; }
+  else if (!auto) box.hidden = true;
+}
+
+/** write the automatically chosen sizes into the fields (without switching to manual) */
+function showAutoSpec(spec) {
+  if (!spec) return;
+  $('conn-diam').value = spec.diameter;
+  $('conn-len').value = spec.length;
+  $('conn-count').value = spec.count || 1;
+}
 
 function readSpec() {
   return {
@@ -1048,6 +1218,7 @@ function readSpec() {
     count: Math.max(1, Math.min(6, parseInt($('conn-count').value, 10) || 1)),
     maleOn: $('conn-male').value,
     angle: parseFloat($('conn-angle').value) || 15,
+    auto: $('chk-auto').checked,
   };
 }
 
@@ -1069,9 +1240,11 @@ async function updatePreview() {
   if (!part || !part.object) return;
   const spec = readSpec();
   const hasSel = part.sel.some((v) => v);
-  if (state.method === 'membrane' && !hasSel) return;
-  if (state.method === 'plane' && !state.plane) return;
-  if (state.method === 'membrane' && spec.type === 'none') return;
+  if ((state.method === 'membrane' && !hasSel) || (state.method === 'plane' && !state.plane) || spec.type === 'none') {
+    $('conn-auto').hidden = true;
+    if (state.method === 'membrane' && spec.type === 'none') return;
+    return;
+  }
   let plan;
   const seq = ++state.previewSeq;
   const hint = $('conn-hint');
@@ -1095,11 +1268,18 @@ async function updatePreview() {
     l.renderOrder = 6;
     g.add(l);
   }
-  for (const pl of plan.placements) g.add(connectorGhost(spec, pl));
+  const used = plan.spec || spec;
+  for (const pl of plan.placements) g.add(connectorGhost(used, pl));
   part._preview = g;
   part.object.add(g);
+  if (plan.spec) showAutoSpec(plan.spec);
+  updateConnUI();
+  if (spec.type !== 'none') {
+    if (spec.auto) updateAutoUI(plan.spec ? `Automatico: ${plan.note}` : null);
+    else updateAutoUI(plan.note || null);
+    if (!plan.note && !plan.spec) $('conn-auto').hidden = true;
+  }
   if (plan.warning) hint.textContent = plan.warning;
-  else updateConnUI();
   viewer.requestRender();
 }
 
@@ -1176,6 +1356,7 @@ async function doSplit() {
       applyExplode();
       refreshAll();
       for (const w of res.warnings) toast(w, 'error', 7000);
+      if (res.spec && res.note) toast(`Connettori: ${res.note}`, 'ok', 7000);
       if (state.method === 'plane' && hasSel) {
         const selArea = selectedStats(part).area;
         if (pA.mesh.totalArea > selArea * 1.8 + part.mesh.totalArea * 0.02) {
@@ -1478,6 +1659,7 @@ $('btn-redo').onclick = redo;
 
 setMode('smart');
 updateConnUI();
+updateAutoUI();
 refreshAll();
 window.__app.loadDemo = loadDemo;
 window.__app.openFile = openFile;
